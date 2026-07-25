@@ -38,7 +38,7 @@ from scipy.spatial import Delaunay, cKDTree
 from datagen_config import PebbleCoreConfig
 from geometry import CoreGeometry, triangle_areas, nodal_volumes
 from materials_fhr import MATERIAL_IDS, xs_for_id
-from xs_common import nusf_slice
+from xs_common import nusf_slice, sr_slice
 
 
 # --- footprint tests ---------------------------------------------------------
@@ -294,11 +294,15 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         else:
             xs[i] = xs_for_id(m).as_row()
 
-    # burnup/recirculation proxy: perturb fuel-pebble nuSf
+    # burnup + temperature proxy (fuel pebbles only). DIRECTIONAL: fissile depletion
+    # lowers nuSf; fission-product poison (Xe/Sm) raises the THERMAL removal Sr2. temp
+    # is a small symmetric +/- wiggle on nuSf (see PebbleCoreConfig).
     fuel_mask = material_state == MATERIAL_IDS["fuel_pebble"]
-    nf = nusf_slice(2)
-    pert = 1.0 + rng.uniform(-cfg.burnup_perturb, cfg.burnup_perturb, N)
-    xs[fuel_mask, nf] *= pert[fuel_mask, None]
+    nf = nusf_slice(2); sr = sr_slice(2)
+    burn = rng.uniform(0.0, cfg.burnup_perturb, N)
+    temp = 1.0 + rng.uniform(-cfg.temp_perturb, cfg.temp_perturb, N)
+    xs[fuel_mask, nf] *= ((1.0 - burn[fuel_mask]) * temp[fuel_mask])[:, None]
+    xs[fuel_mask, sr.start + 1] *= (1.0 + cfg.burnup_poison_coeff * burn[fuel_mask])  # Sr2 poison
 
     control_rod_cells = np.where(np.isin(material_state, [ctrl_id, shut_id]))[0].astype(np.int64)
 

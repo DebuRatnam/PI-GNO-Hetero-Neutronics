@@ -282,13 +282,23 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
 
     # --- per-node cross sections (control insertion + per-assembly XS perturbation) ---
     hex_depth = np.array([m["depth"] for m in hex_meta] + [1.0])  # -1 (gap) -> unused
-    perturb = 1.0 + rng.uniform(-hx.xs_perturb, hx.xs_perturb, size=len(hex_meta) + 1)
+    # per-assembly burnup + temperature proxy. temp = symmetric +/- wiggle on nuSf;
+    # burnup = DIRECTIONAL and fuel-only: fissile depletion lowers nuSf, fission-product
+    # poison raises removal Sr (see HexCoreConfig).
+    nA = len(hex_meta) + 1
+    temp = 1.0 + rng.uniform(-hx.xs_perturb, hx.xs_perturb, size=nA)
+    burn = rng.uniform(0.0, hx.burnup_max, size=nA)
+    fuel_ids = (MATERIAL_IDS["fuel_inner"], MATERIAL_IDS["fuel_outer"])
     cross_sections = np.zeros((coords.shape[0], 7))
     for n in range(coords.shape[0]):
         h = node_hex[n]
         depth = float(hex_depth[h]) if h >= 0 else 1.0   # gap = coolant, depth ignored
-        xs = np.array(xs_for_id(int(material_state[n]), insert_frac=depth).as_row())
-        xs[5:7] *= perturb[h]            # perturb fissile production per assembly
+        m = int(material_state[n])
+        xs = np.array(xs_for_id(m, insert_frac=depth).as_row())
+        xs[5:7] *= temp[h]                                # temperature/density wiggle (nuSf)
+        if m in fuel_ids:                                 # directional burnup, fuel only
+            xs[5:7] *= (1.0 - burn[h])                    # fissile depletion
+            xs[2:4] *= (1.0 + hx.burnup_poison_coeff * burn[h])  # fission-product poison (Sr up)
         cross_sections[n] = xs
 
     # --- boundary = outer hex edges with no neighbouring assembly ---

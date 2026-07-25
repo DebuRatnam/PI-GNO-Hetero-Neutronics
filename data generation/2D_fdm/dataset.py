@@ -18,7 +18,7 @@ is not auto-run; it only builds tensors and writes .npz files.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import numpy as np
@@ -86,9 +86,21 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
             enrichment_boundary=knobs.get("enrichment_boundary"),
             insert_fraction=knobs.get("insert_fraction"), rng=rng)
 
-    A, F = assemble_AF(geom, cfg.physics)
+    # Per-reactor FIXED nuclear data: fission spectrum chi + axial-leakage buckling
+    # come from the material module (fast core vs thermal pebble bed differ). Only the
+    # module chi is applied when its length matches n_groups (the hand libraries are
+    # G=2); an explicit multigroup chi in cfg.physics is otherwise preserved.
+    mod = _mat_module(cfg.reactor_type)
+    chi = (mod.CHI if getattr(mod, "CHI", None) is not None
+           and len(mod.CHI) == cfg.physics.n_groups else cfg.physics.chi)
+    physics = replace(cfg.physics, chi=chi,
+                      axial_buckling=getattr(mod, "AXIAL_BUCKLING_CM2",
+                                             cfg.physics.axial_buckling))
+    eff_cfg = replace(cfg, physics=physics)
+
+    A, F = assemble_AF(geom, physics)
     sol = solve_keff(A, F, cfg.solver, n_nodes=geom.n_nodes)
-    pwr = power_density(sol.flux, geom.cross_sections, cfg.physics)
+    pwr = power_density(sol.flux, geom.cross_sections, physics)
     edge_index, edge_features = build_message_graph(geom, cfg.graph)
 
     id2mat = _mat_module(cfg.reactor_type).ID_TO_MATERIAL
@@ -110,7 +122,7 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
         "flux": sol.flux,
         "power_density": pwr,
         "geometry_metadata": {
-            **cfg.metadata(),
+            **eff_cfg.metadata(),
             "layout_name": layout_name,
             "control_rod_cells": geom.control_rod_cells.tolist(),
             # reactor-specific layout (assemblies/pebbles, insertion, rings, ...)

@@ -143,6 +143,16 @@ LIBRARY: Dict[str, MultiGroupXS] = {
     ),
 }
 
+# Fission spectrum chi for the Natrium FAST core (G=2). Group boundary ~0.8 MeV;
+# a prompt-fission (Watt) spectrum places ~60% of births above 0.8 MeV (g1 high-fast)
+# and ~40% in g2 (slow-fast) -- NOT ~all in g1, because both groups are fast and the
+# boundary sits inside the birth spectrum. Replaces the old shared CHI=(0.95,0.05).
+CHI = (0.60, 0.40)
+
+# Transverse (axial) leakage buckling Bz^2 [1/cm^2]. Bz^2 = (pi / H_extrap)^2 with an
+# SFR active height ~100 cm plus a few-cm extrapolation length -> ~(pi/104)^2.
+AXIAL_BUCKLING_CM2 = 9.1e-4
+
 # Withdrawn control assembly = sodium follower (nearly transparent, like coolant).
 CONTROL_FOLLOWER: MultiGroupXS = TwoGroupXS(
     D1=2.55, D2=1.95,

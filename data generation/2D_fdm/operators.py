@@ -97,9 +97,14 @@ def assemble_AF(geom: CoreGeometry, physics: PhysicsConfig
 
     # loss operator A: diagonal blocks (stiffness + removal + Robin), off-diagonal
     # blocks are the down-scatter in-scatter sources.
+    # transverse (axial) leakage: a 2D radial model ignores axial leakage, so add
+    # D_g*Bz^2 to each group's removal (Bz^2 = physics.axial_buckling). Bz^2=0 -> the
+    # original pure-2D operator, so existing zero-buckling data is unchanged.
+    Bz2 = float(getattr(physics, "axial_buckling", 0.0))
     Ablk = [[None] * G for _ in range(G)]
     for g in range(G):
-        Ablk[g][g] = stiffness(D[:, g]) + Rd + sp.diags(Sr[:, g] * V)
+        removal = (Sr[:, g] + Bz2 * D[:, g]) * V         # absorption/out-scatter + axial leak
+        Ablk[g][g] = stiffness(D[:, g]) + Rd + sp.diags(removal)
     for idx, (gf, gt) in enumerate(scatter_pairs(G)):
         # neutrons scattering DOWN from gf appear as a source in group gt
         Ablk[gt][gf] = -sp.diags(Ssc[:, idx] * V)

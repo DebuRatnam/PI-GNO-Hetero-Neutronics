@@ -83,6 +83,12 @@ class PhysicsConfig:
     # two fast groups). For a multigroup run set BOTH n_groups and chi together.
     n_groups: int = 2
     chi: Tuple[float, ...] = CHI
+    # Transverse (axial) leakage buckling Bz^2 [1/cm^2] for the 2D radial model:
+    # removal gains D_g*Bz^2, approximating axial leakage a 2D slice otherwise ignores
+    # (without it k_eff is biased high). 0 = pure 2D. Set per-reactor in dataset.py
+    # from the material module's AXIAL_BUCKLING_CM2 (fast core leaks more per unit
+    # height than the taller pebble bed).
+    axial_buckling: float = 0.0
     vacuum_extrap_factor: float = VACUUM_EXTRAP_FACTOR  # legacy FDM; unused by FEM
     vacuum_robin_alpha: float = VACUUM_ROBIN_ALPHA      # FEM Marshak Robin coeff
     energy_per_fission_j: float = ENERGY_PER_FISSION_J
@@ -144,8 +150,13 @@ class HexCoreConfig:
     n_secondary_control: int = 4
     control_insert_fraction: Tuple[float, float] = (0.0, 1.0)  # frac of rods inserted
 
-    # cross-section perturbation (burnup/temperature proxy), fractional +/- range
-    xs_perturb: float = 0.05
+    # burnup + temperature proxy (per assembly). xs_perturb is a small SYMMETRIC +/-
+    # temperature/density wiggle on nuSf; burnup is DIRECTIONAL (fuel only): fissile
+    # depletion lowers nuSf by up to burnup_max, and fission-product poison raises
+    # removal by burnup_poison_coeff*burnup.
+    xs_perturb: float = 0.03          # symmetric +/- temperature/density wiggle (nuSf)
+    burnup_max: float = 0.12          # max burnup fraction (directional depletion)
+    burnup_poison_coeff: float = 0.30 # removal rise per unit burnup (fission products)
 
 
 @dataclass(frozen=True)
@@ -198,7 +209,13 @@ class PebbleCoreConfig:
     x_arm_w: float = 3.0              # X bar width
 
     coolant_step_frac: float = 1.5    # interstitial coolant grid step / r_peb
-    burnup_perturb: float = 0.08      # fractional +/- nuSf perturbation (burnup proxy)
+    # burnup + temperature proxy (per fuel pebble). burnup_perturb is the max burnup
+    # FRACTION: fissile depletion lowers nuSf, and fission-product poison (Xe/Sm)
+    # raises the THERMAL removal Sr2 by burnup_poison_coeff*burnup (strong in a thermal
+    # core). temp_perturb is a small symmetric +/- temperature/density wiggle on nuSf.
+    burnup_perturb: float = 0.10      # max burnup fraction (directional depletion)
+    burnup_poison_coeff: float = 0.60 # thermal-removal rise per unit burnup (poison)
+    temp_perturb: float = 0.03        # symmetric +/- temperature/density wiggle (nuSf)
     # per-sample variability drawn per split (see make_split_plans_fhr); ranges here
     # bound the fraction of control / shutdown inserted and the moderator-pebble
     # fraction (fuel:moderator ratio is a real KP-FHR reactivity lever).

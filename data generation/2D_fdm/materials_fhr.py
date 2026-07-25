@@ -117,6 +117,17 @@ LIBRARY: Dict[str, MultiGroupXS] = {
     ),
 }
 
+# Fission spectrum chi for the KP-FHR THERMAL core (G=2). Thermal cut ~0.625 eV;
+# essentially every fission neutron is born fast (~2 MeV), so ALL birth goes to g1 and
+# none to the thermal group g2. chi_2 must be ~0 (the old shared 0.05 was unphysical
+# for a thermal group).
+CHI = (1.0, 0.0)
+
+# Transverse (axial) leakage buckling Bz^2 [1/cm^2]. Bz^2 = (pi / H_extrap)^2 with a
+# pebble-bed active height ~310 cm (gFHR/KP-FHR) plus extrapolation -> ~(pi/314)^2.
+# Smaller than the fast core: a taller core leaks less axially per unit height.
+AXIAL_BUCKLING_CM2 = 1.0e-4
+
 # Withdrawn control/shutdown element = FLiBe-filled channel (like coolant).
 FLIBE_FOLLOWER: MultiGroupXS = TwoGroupXS(
     D1=1.40, D2=1.00,
