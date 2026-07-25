@@ -203,6 +203,10 @@ class FHRSplitPlan:
     shutdown_insert_range: tuple
     graphite_pebble_range: tuple           # fuel:moderator ratio (reactivity lever)
     seed: int
+    # Fraction of samples whose 4 control elements insert to INDEPENDENT per-element
+    # depths (asymmetric tilt / stuck-rod states) rather than a single ganged depth.
+    # KP-FHR runs banked/symmetric in normal operation, so keep this a minority.
+    control_independent_frac: float = 0.20
 
 
 def make_split_plans_fhr(sampling: SamplingConfig) -> tuple:

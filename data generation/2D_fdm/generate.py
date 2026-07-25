@@ -52,7 +52,15 @@ def main():
         rng = np.random.default_rng(plan.seed)
         for i in range(plan.n_samples):
             if is_fhr:
-                ic = float(rng.uniform(*plan.control_insert_range))
+                # 80% ganged: all control elements at one shared height (normal
+                # symmetric operation). 20% independent: per-element depths (tilt /
+                # stuck-rod off-normal states) for real-world KP-FHR fidelity. Both
+                # draw from this split's disjoint range, so splits stay disjoint.
+                nctrl = cfg.pebblecore.n_control
+                if rng.random() < plan.control_independent_frac:
+                    ic = rng.uniform(*plan.control_insert_range, size=nctrl).tolist()
+                else:
+                    ic = float(rng.uniform(*plan.control_insert_range))
                 ish = float(rng.uniform(*plan.shutdown_insert_range))
                 gpf = float(rng.uniform(*plan.graphite_pebble_range))
                 knobs = dict(insert_control=ic, insert_shutdown=ish,

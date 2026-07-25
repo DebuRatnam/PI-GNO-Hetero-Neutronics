@@ -255,13 +255,18 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     material_state = np.asarray(mats, dtype=np.int64)
     N = coords.shape[0]
 
-    # control / shutdown bank insertion DEPTHS (gray-rod, in [0,1]): applied to every
-    # element of each bank (banked elements ride at a common height). depth=0 ->
-    # withdrawn (FLiBe follower), depth=1 -> full B4C absorber, between -> partially
-    # inserted as an axially-averaged gray absorber (materials_fhr.xs_for). Densely
-    # fills the reactivity axis; real cores trim k_eff at intermediate insertion.
-    ctrl_depth = float(min(max(insert_control, 0.0), 1.0))
-    shut_depth = float(min(max(insert_shutdown, 0.0), 1.0))
+    # control / shutdown insertion DEPTHS (gray-rod, in [0,1]). insert_control may be
+    # a SCALAR (ganged bank: all n_control elements at one height -- normal symmetric
+    # operation) OR a per-element SEQUENCE of length n_control (independent insertion:
+    # tilt / stuck-rod off-normal states). insert_shutdown likewise for the bed bank.
+    # depth=0 -> withdrawn (FLiBe follower), depth=1 -> full B4C absorber, between ->
+    # partially inserted as an axially-averaged gray absorber (materials_fhr.xs_for).
+    ctrl_depths = np.clip(np.broadcast_to(
+        np.asarray(insert_control, float), (cfg.n_control,)), 0.0, 1.0)
+    shut_depths = np.clip(np.broadcast_to(
+        np.asarray(insert_shutdown, float), (cfg.n_shutdown,)), 0.0, 1.0)
+    ctree_d = cKDTree(ctrl) if len(ctrl) else None    # node -> nearest element index
+    stree_d = cKDTree(shut) if len(shut) else None
 
     # triangulate the full cloud (convex disk -> no exterior holes)
     tri = Delaunay(coords)
@@ -280,10 +285,12 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     xs = np.zeros((N, ncol))
     for i in range(N):
         m = material_state[i]
-        if m == ctrl_id:
-            xs[i] = xs_for_id(m, insert_frac=ctrl_depth).as_row()
-        elif m == shut_id:
-            xs[i] = xs_for_id(m, insert_frac=shut_depth).as_row()
+        if m == ctrl_id and ctree_d is not None:
+            d = float(ctrl_depths[ctree_d.query(coords[i])[1]])   # this element's depth
+            xs[i] = xs_for_id(m, insert_frac=d).as_row()
+        elif m == shut_id and stree_d is not None:
+            d = float(shut_depths[stree_d.query(coords[i])[1]])
+            xs[i] = xs_for_id(m, insert_frac=d).as_row()
         else:
             xs[i] = xs_for_id(m).as_row()
 
@@ -305,11 +312,14 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         "packing_fraction_actual": float(
             n_peb * cfg.r_peb ** 2 / (cfg.R_bed ** 2 - cfg.R_center_refl ** 2)),
         "n_control": int(cfg.n_control),
-        "n_control_inserted": int(cfg.n_control) if ctrl_depth > 0.0 else 0,
+        "n_control_inserted": int((ctrl_depths > 0.0).sum()),
         "n_shutdown": int(cfg.n_shutdown),
-        "n_shutdown_inserted": int(cfg.n_shutdown) if shut_depth > 0.0 else 0,
-        "control_depth": ctrl_depth, "shutdown_depth": shut_depth,
-        "insert_control": float(insert_control), "insert_shutdown": float(insert_shutdown),
+        "n_shutdown_inserted": int((shut_depths > 0.0).sum()),
+        "control_depths": [float(d) for d in ctrl_depths],
+        "shutdown_depths": [float(d) for d in shut_depths],
+        "control_ganged": bool(np.ptp(ctrl_depths) < 1e-12) if len(ctrl_depths) else True,
+        "mean_control_depth": float(ctrl_depths.mean()) if len(ctrl_depths) else 0.0,
+        "mean_shutdown_depth": float(shut_depths.mean()) if len(shut_depths) else 0.0,
         "R_center_refl": cfg.R_center_refl, "R_fuel_in": cfg.R_fuel_in,
         "R_fuel_out": cfg.R_fuel_out, "R_bed": cfg.R_bed,
         "R_refl": cfg.R_refl, "R_vessel": cfg.R_vessel,
