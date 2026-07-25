@@ -178,3 +178,20 @@ def xs_for_id(material_id: int, *, inserted: bool = True,
               insert_frac: float | None = None) -> MultiGroupXS:
     return xs_for(ID_TO_MATERIAL[material_id], inserted=inserted,
                   insert_frac=insert_frac)
+
+
+# Thermal UP-scatter Ss_{g2->g1} [1/cm] (thermal -> epithermal): a real effect in
+# graphite/FLiBe at KP-FHR temperature (~650 C), negligible in fuel/absorber/vessel.
+# Applied at the OPERATOR level (assembled into A: raises thermal removal + adds an
+# in-scatter source to the fast group) rather than stored in the per-node XS row,
+# which stays down-scatter-only (schema unchanged). ~an order of magnitude below the
+# fast->thermal down-scatter Ss12.
+UPSCATTER_21: Dict[str, float] = {
+    "fuel_pebble": 0.0008, "graphite_pebble": 0.0025, "control_element": 0.0,
+    "shutdown_element": 0.0, "reflector": 0.0022, "coolant": 0.0015, "vessel": 0.0,
+}
+
+
+def up_scatter_for_id(material_id: int) -> float:
+    """Thermal->fast up-scatter Ss21 [1/cm] for a material id (0 if none)."""
+    return UPSCATTER_21.get(ID_TO_MATERIAL[material_id], 0.0)

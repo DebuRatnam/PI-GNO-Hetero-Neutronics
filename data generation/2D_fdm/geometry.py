@@ -47,6 +47,9 @@ class CoreGeometry:
     mesh: object                 # kept for compatibility (may be None)
     layout_name: str
     assembly_metadata: Dict = field(default_factory=dict)
+    # Optional per-node thermal up-scatter Ss_{g2->g1} [N] (FHR only). Applied at the
+    # operator level in assemble_AF; None (hex) -> pure down-scatter, unchanged.
+    upscatter: Optional[np.ndarray] = None
 
     @property
     def n_nodes(self) -> int:

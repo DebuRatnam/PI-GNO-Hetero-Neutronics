@@ -31,7 +31,9 @@ import argparse
 import json
 from typing import Dict, List
 
-from xs_common import MultiGroupXS, multigroupxs_to_dict, n_scatter
+import numpy as np
+
+from xs_common import MultiGroupXS, multigroupxs_to_dict, n_scatter, scatter_pairs
 
 
 # Default two-group energy boundaries (eV), ascending [low, cut, high].
@@ -63,13 +65,101 @@ def _default_library(reactor_type: str) -> Dict[str, MultiGroupXS]:
     return dict(m.LIBRARY)
 
 
+def _mat_module(reactor_type: str):
+    import materials_fhr
+    import materials
+    return materials_fhr if reactor_type == "fhr" else materials
+
+
 def _default_chi(reactor_type: str, G: int) -> List[float]:
-    from datagen_config import CHI
-    if G == 2:
-        return list(CHI)
-    chi = [0.0] * G
-    chi[0] = 1.0                      # fission neutrons born in the fastest group
-    return chi
+    # per-reactor fission spectrum from the material module (fast core vs thermal core)
+    mod = _mat_module(reactor_type)
+    chi = getattr(mod, "CHI", None)
+    if chi is not None and len(chi) == G:
+        return list(chi)
+    out = [0.0] * G
+    out[0] = 1.0                      # fission neutrons born in the fastest group
+    return out
+
+
+# Fissile materials per reactor (run in eigenvalue mode; others get a driving source).
+_FISSILE = {"hex": {"fuel_inner", "fuel_outer"}, "fhr": {"fuel_pebble"}}
+
+
+def _build_material(name: str, reactor_type: str):
+    """Representative openmc.Material for one library material.
+
+    DOCUMENTED STARTING POINTS at public/literature level (HALEU U-10Zr metal fuel,
+    graphite, B4C, FLiBe, sodium, HT9/steel) -- NOT a validated core specification.
+    Review compositions/densities against your reactor spec before treating the
+    tallied constants as benchmark-grade.
+    """
+    import openmc
+    m = openmc.Material(name=name)
+    if reactor_type == "fhr":
+        if name == "fuel_pebble":                    # TRISO UO2 (HALEU) homogenized in graphite
+            m.add_element("U", 1.0, enrichment=19.75)
+            m.add_element("O", 2.0)
+            m.add_element("C", 30.0)                  # matrix + coatings (homogenized pebble)
+            m.set_density("g/cm3", 2.0)
+            m.add_s_alpha_beta("c_Graphite")
+        elif name in ("graphite_pebble", "reflector"):
+            m.add_element("C", 1.0)
+            m.set_density("g/cm3", 1.7)
+            m.add_s_alpha_beta("c_Graphite")
+        elif name in ("control_element", "shutdown_element"):
+            m.add_element("B", 4.0); m.add_element("C", 1.0)   # B4C (natural boron)
+            m.set_density("g/cm3", 2.52)
+        elif name == "coolant":                      # FLiBe (Li2BeF4), Li-7 enriched
+            m.add_nuclide("Li7", 2.0 * 0.99995); m.add_nuclide("Li6", 2.0 * 0.00005)
+            m.add_element("Be", 1.0); m.add_element("F", 4.0)
+            m.set_density("g/cm3", 1.94)
+        elif name == "vessel":                       # Hastelloy-N-like Ni-Mo-Cr alloy
+            m.add_element("Ni", 0.71); m.add_element("Mo", 0.16)
+            m.add_element("Cr", 0.07); m.add_element("Fe", 0.06)
+            m.set_density("g/cm3", 8.86)
+        else:
+            raise ValueError(f"unknown fhr material {name}")
+    else:                                            # hex / Natrium fast
+        if name in ("fuel_inner", "fuel_outer"):     # U-10Zr metal, HALEU (inner hotter)
+            enr = 19.75 if name == "fuel_inner" else 14.0
+            m.add_element("U", 0.9, enrichment=enr); m.add_element("Zr", 0.1)
+            m.set_density("g/cm3", 15.5)
+        elif name in ("primary_control", "secondary_control", "shield"):
+            m.add_element("B", 4.0); m.add_element("C", 1.0)   # B4C
+            m.set_density("g/cm3", 2.52)
+        elif name == "reflector":                    # stainless reflector
+            m.add_element("Fe", 0.70); m.add_element("Cr", 0.18); m.add_element("Ni", 0.12)
+            m.set_density("g/cm3", 7.9)
+        elif name == "duct":                         # HT9 (Fe-12Cr) + sodium gap, homogenized
+            m.add_element("Fe", 0.85); m.add_element("Cr", 0.12); m.add_element("Na", 0.03)
+            m.set_density("g/cm3", 7.0)
+        elif name == "coolant":                      # sodium
+            m.add_element("Na", 1.0); m.set_density("g/cm3", 0.85)
+        else:
+            raise ValueError(f"unknown hex material {name}")
+    return m
+
+
+def _collapse(mg_lib, material, G: int) -> MultiGroupXS:
+    """Collapse an openmc.mgxs.Library result for one material to a MultiGroupXS row.
+
+    Sr_g = absorption_g + total out-scatter_g ; the stored scatter block keeps only the
+    DOWN-scatter pairs (g_from < g_to), matching xs_common. Up-scatter is folded into
+    Sr (removal) here; the FHR generator carries it explicitly at operator level too.
+    OpenMC orders groups by DECREASING energy (index 0 = fastest), matching g0=fast.
+    """
+    def xs(kind):
+        return np.asarray(mg_lib.get_mgxs(material, kind).get_xs(), dtype=float).reshape(-1)
+    D = xs("diffusion-coefficient")[:G]
+    Sa = xs("absorption")[:G]
+    nuSf = xs("nu-fission")[:G]
+    Smat = np.asarray(mg_lib.get_mgxs(material, "nu-scatter matrix").get_xs(),
+                      dtype=float).reshape(G, G)               # [g_from, g_to]
+    out_scatter = Smat.sum(axis=1) - np.diag(Smat)             # total scatter out of g
+    Sr = Sa + out_scatter
+    down = [Smat[gf, gt] for gf, gt in scatter_pairs(G)]       # gf < gt (down-scatter)
+    return MultiGroupXS(D=tuple(D), Sr=tuple(Sr), scatter=tuple(down), nuSf=tuple(nuSf))
 
 
 def run_openmc_library(reactor_type: str, G: int,
@@ -81,20 +171,57 @@ def run_openmc_library(reactor_type: str, G: int,
     --dry-run path) work without OpenMC installed. Filled in per-reactor unit-cell
     definitions live here; the collapse below is generic.
     """
-    import openmc          # noqa: F401  (lazy; raises if unavailable)
-    import openmc.mgxs as mgxs  # noqa: F401
+    import openmc
+    import openmc.mgxs as mgxs
 
-    # NOTE: per-material unit-cell construction (reflected fuel pebble in FLiBe for
-    # KP-FHR; homogenized fast assembly for Natrium; infinite medium for absorbers/
-    # reflector) is reactor-specific and is built here. Each model tallies
-    # diffusion-coefficient (or transport -> D=1/3Sigma_tr), removal, scatter-matrix
-    # (kept strictly-lower / down-scatter), nu-fission, and chi on the group
-    # structure `boundaries_ev`, then collapses into a MultiGroupXS row. Left as a
-    # documented interface so it can be run on a machine with OpenMC + nuclear data.
-    raise NotImplementedError(
-        "OpenMC unit-cell models are environment-specific. Run on a host with "
-        "OpenMC + an ENDF/B HDF5 library (OPENMC_CROSS_SECTIONS). Use --dry-run to "
-        "exercise the cache plumbing with the committed default library.")
+    groups = mgxs.EnergyGroups(np.asarray(boundaries_ev, dtype=float))
+    fissile = _FISSILE[reactor_type]
+    out: Dict[str, MultiGroupXS] = {}
+
+    for name in _default_library(reactor_type):          # material names for this reactor
+        mat = _build_material(name, reactor_type)
+
+        # infinite medium: one cell of the material in a reflective box (the collapse
+        # spectrum is the material's own infinite-medium spectrum; a fission source
+        # drives non-fissile media). Full-core flux-weighting is higher fidelity --
+        # swap this unit cell for the assembled core geometry if you have it.
+        box = openmc.model.RectangularParallelepiped(
+            -10, 10, -10, 10, -10, 10, boundary_type="reflective")
+        cell = openmc.Cell(fill=mat, region=-box)
+        geometry = openmc.Geometry([cell])
+
+        settings = openmc.Settings()
+        settings.particles = 20000
+        settings.batches = 150
+        settings.inactive = 30
+        if name in fissile:
+            settings.run_mode = "eigenvalue"
+        else:
+            settings.run_mode = "fixed source"
+            src = openmc.IndependentSource()
+            src.space = openmc.stats.Point((0.0, 0.0, 0.0))
+            src.energy = openmc.stats.Watt()            # representative fission driving source
+            settings.source = src
+
+        mg_lib = mgxs.Library(geometry)
+        mg_lib.energy_groups = groups
+        mg_lib.mgxs_types = ["diffusion-coefficient", "absorption",
+                             "nu-scatter matrix", "nu-fission"]
+        mg_lib.domain_type = "material"
+        mg_lib.domains = [mat]
+        mg_lib.build_library()
+
+        tallies = openmc.Tallies()
+        mg_lib.add_to_tallies_file(tallies, merge=True)
+
+        model = openmc.Model(geometry=geometry, settings=settings,
+                             tallies=tallies, materials=openmc.Materials([mat]))
+        sp_path = model.run()
+        with openmc.StatePoint(sp_path) as sp:
+            mg_lib.load_from_statepoint(sp)
+
+        out[name] = _collapse(mg_lib, mat, G)
+    return out
 
 
 def write_library_json(path: str, reactor_type: str, G: int,

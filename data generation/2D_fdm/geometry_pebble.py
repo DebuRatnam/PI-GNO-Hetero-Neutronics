@@ -37,7 +37,7 @@ from scipy.spatial import Delaunay, cKDTree
 
 from datagen_config import PebbleCoreConfig
 from geometry import CoreGeometry, triangle_areas, nodal_volumes
-from materials_fhr import MATERIAL_IDS, xs_for_id
+from materials_fhr import MATERIAL_IDS, xs_for_id, up_scatter_for_id
 from xs_common import nusf_slice, sr_slice
 
 
@@ -306,6 +306,10 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
 
     control_rod_cells = np.where(np.isin(material_state, [ctrl_id, shut_id]))[0].astype(np.int64)
 
+    # per-node thermal up-scatter Ss_{g2->g1} (moderators only); assembled into A by
+    # operators.assemble_AF. Kept out of the per-node XS row (schema down-scatter-only).
+    upscatter = np.array([up_scatter_for_id(int(m)) for m in material_state], dtype=float)
+
     meta = {
         "reactor_type": "fhr",
         "core_area_cm2": float(areas.sum()),
@@ -327,11 +331,13 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         "R_center_refl": cfg.R_center_refl, "R_fuel_in": cfg.R_fuel_in,
         "R_fuel_out": cfg.R_fuel_out, "R_bed": cfg.R_bed,
         "R_refl": cfg.R_refl, "R_vessel": cfg.R_vessel,
+        "upscatter_included": True,
+        "upscatter_note": "thermal->fast Ss21, operator-level (in A), not in node XS row",
     }
 
     return CoreGeometry(
         material_state=material_state, coordinates=coords, boundary_mask=boundary_mask,
         cross_sections=xs, control_rod_cells=control_rod_cells, elements=elements,
-        boundary_edges=boundary_edges, nodal_volume=V, mesh=None,
+        boundary_edges=boundary_edges, nodal_volume=V, mesh=None, upscatter=upscatter,
         layout_name=layout_name, assembly_metadata=meta,
     )

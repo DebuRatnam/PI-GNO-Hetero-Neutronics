@@ -108,6 +108,17 @@ def assemble_AF(geom: CoreGeometry, physics: PhysicsConfig
     for idx, (gf, gt) in enumerate(scatter_pairs(G)):
         # neutrons scattering DOWN from gf appear as a source in group gt
         Ablk[gt][gf] = -sp.diags(Ssc[:, idx] * V)
+    # optional thermal UP-scatter (FHR, operator-level): Ss_{g2->g1}. Raises the
+    # thermal-group removal (out-scatter) and adds an in-scatter source to the fast
+    # group. G=2 only (the up-scatter data is two-group); None (hex) -> unchanged.
+    Ssup = getattr(geom, "upscatter", None)
+    if Ssup is not None and np.any(Ssup):
+        if G != 2:
+            raise ValueError("operator-level up-scatter is implemented for G=2 only")
+        up = np.asarray(Ssup, dtype=float) * V
+        Ablk[1][1] = Ablk[1][1] + sp.diags(up)              # thermal removal += out-scatter
+        src = -sp.diags(up)                                 # in-scatter source into fast group
+        Ablk[0][1] = src if Ablk[0][1] is None else (Ablk[0][1] + src)
     for i in range(G):
         for j in range(G):
             if Ablk[i][j] is None:
