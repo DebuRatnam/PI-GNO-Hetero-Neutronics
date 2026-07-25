@@ -3,7 +3,7 @@
 One sample = one IRREGULAR P1-FEM core state (N varies per sample):
     material_state[N], coordinates[N,2], cross_sections[N,7],
     elements[T,3], boundary_edges[B,2], nodal_volume[N],   (FEM mesh topology)
-    edge_index[2,E], edge_features[E,8],                    (FRNN message graph)
+    edge_index[2,E], edge_features[E,8],                    (kNN message graph)
     A[2N,2N], F[2N,2N], boundary_mask[N], k_eff,
     flux[N,2], power_density[N], geometry_metadata.
 

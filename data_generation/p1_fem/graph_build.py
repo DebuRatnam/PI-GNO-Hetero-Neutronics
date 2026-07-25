@@ -7,12 +7,8 @@ neighbors, with symmetric closure. Fixed degree gives clean batching + good GPU
 utilization on variable-N samples and avoids the ragged-degree / radius-tuning
 sensitivity of a radius graph on the structured hex mesh (dense assembly interior
 vs. thin sodium gaps). There is NO hardcoded 8-neighbor / diagonal offset list:
-connectivity emerges from the geometry.
-
-A radius graph is still available (`GraphConfig.graph_method="radius"`), routed to
-the user's custom FRNN (C++/CUDA) via `frnn_interface.py` when wired, or a KD-tree
-radius fallback otherwise. All paths emit the same directed `edge_index [2,E]` /
-`edge_features [E,8]` contract, so the model code is unaffected by the choice.
+connectivity emerges from the geometry. It emits a directed `edge_index [2,E]` /
+`edge_features [E,8]`.
 
 Edge feature order [E, 8] (directed src -> dst; see datagen_config.metadata):
     [0] distance        = ||x_dst - x_src||
@@ -38,12 +34,6 @@ from scipy.spatial import cKDTree
 from geometry import CoreGeometry
 from datagen_config import GraphConfig
 from xs_common import d_slice, sr_slice, scatter_slice, groups_from_n_xs_cols
-
-try:
-    from frnn_interface import frnn_query, FRNN_AVAILABLE
-except Exception:  # pragma: no cover
-    FRNN_AVAILABLE = False
-    frnn_query = None
 
 
 def _knn_graph(coords: np.ndarray, k: int) -> np.ndarray:
@@ -75,23 +65,6 @@ def _knn_graph(coords: np.ndarray, k: int) -> np.ndarray:
     return np.stack([s[sel], d[sel]], axis=0).astype(np.int64)
 
 
-def _python_radius_graph(coords: np.ndarray, radius: float) -> np.ndarray:
-    """Fallback FRNN: directed edges between all cell pairs within `radius`.
-
-    Uses a KD-tree radius search (no fixed offset list, no diagonal special-case).
-    Returns edge_index [2, E] (directed src->dst, both directions), no self-loops.
-    Replace with the CUDA FRNN for large/irregular point sets.
-    """
-    tree = cKDTree(coords)
-    pairs = tree.query_pairs(r=radius, output_type="ndarray")  # [P, 2], i<j, no self
-    if pairs.size == 0:
-        return np.zeros((2, 0), dtype=np.int64)
-    # symmetric closure: add both directions
-    src = np.concatenate([pairs[:, 0], pairs[:, 1]])
-    dst = np.concatenate([pairs[:, 1], pairs[:, 0]])
-    return np.stack([src, dst], axis=0).astype(np.int64)
-
-
 def _harmonic(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Elementwise harmonic mean, 0 where either side is non-positive."""
     out = np.zeros_like(a, dtype=np.float64)
@@ -104,13 +77,7 @@ def build_message_graph(geom: CoreGeometry, cfg: GraphConfig
                         ) -> Tuple[np.ndarray, np.ndarray]:
     """Return (edge_index [2, E], edge_features [E, 8])."""
     coords = geom.coordinates
-    method = getattr(cfg, "graph_method", "knn")
-    if method == "knn":
-        edge_index = _knn_graph(coords, cfg.knn_k)
-    elif FRNN_AVAILABLE:
-        edge_index = frnn_query(coords, radius=cfg.frnn_radius, mesh=geom.mesh)
-    else:
-        edge_index = _python_radius_graph(coords, cfg.frnn_radius)
+    edge_index = _knn_graph(coords, cfg.knn_k)
 
     src, dst = edge_index[0], edge_index[1]
     # Group-1 (fastest group) scalars as the representative interface features,

@@ -3,9 +3,9 @@
 R = A phi_hat - (1 / k_hat) F phi_hat       (CLAUDE objective)
 
 CRITICAL contract points:
-  - A, F are the sparse operators from data generation (operators.py), shape
+  - A, F are the sparse operators from data_generation (operators.py), shape
     [2N, 2N], group-major ordering [g1(N), g2(N)]. They are NEVER reconstructed
-    from the FRNN/message graph.
+    from the message graph.
   - phi_hat must be PHYSICAL (de-normalized) and packed group-major to match A/F.
   - Sparse mat-vec uses torch.sparse (cuSPARSE on GPU) — no custom CUDA needed.
 

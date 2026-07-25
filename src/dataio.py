@@ -1,6 +1,6 @@
 """Load generated .npz samples into torch tensors for training.
 
-Bridges data generation (numpy/scipy) -> model (torch). Builds the torch sparse
+Bridges data_generation (numpy/scipy) -> model (torch). Builds the torch sparse
 A/F once per sample and caches the canonical node feature tensor. No training
 here.
 """
@@ -18,7 +18,7 @@ from physics import scipy_csr_to_torch
 
 # import the loader from the data-generation package
 import sys
-_DG = os.path.join(os.path.dirname(__file__), "..", "data generation", "2D_fdm")
+_DG = os.path.join(os.path.dirname(__file__), "..", "data_generation", "p1_fem")
 sys.path.insert(0, os.path.abspath(_DG))
 from dataset import load_sample  # noqa: E402
 
@@ -26,7 +26,7 @@ from dataset import load_sample  # noqa: E402
 @dataclass
 class Sample:
     node_feats: torch.Tensor     # [N, 18] raw (physical; 8-way one-hot material)
-    edge_index: torch.Tensor     # [2, E] long (radius graph)
+    edge_index: torch.Tensor     # [2, E] long (kNN message graph)
     edge_feats: torch.Tensor     # [E, 8] raw
     flux: torch.Tensor           # [N, 2] physical reference
     k_eff: torch.Tensor          # scalar

@@ -20,7 +20,7 @@ import torch
 # reactors (Natrium hex: 8 materials, G=2 -> 18 dims; KP-FHR pebble: 7 materials,
 # G=2 -> 17 dims) and any group count G. Layout:
 #   [x, y, <one-hot material (n_materials)>, <XS block (n_xs_cols(G))>, boundary_flag]
-# XS block order (see data generation/xs_common): D(G), Sr(G), downscatter(G(G-1)/2),
+# XS block order (see data_generation/xs_common): D(G), Sr(G), downscatter(G(G-1)/2),
 # nuSf(G). Build a NodeLayout from a dataset's geometry_metadata (n_materials,
 # n_groups); the module-level constants below are the Natrium hex default so
 # existing code keeps working unchanged.

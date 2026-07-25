@@ -48,7 +48,7 @@ class KHead(nn.Module):
 class PowerHead(nn.Module):
     """Physics-consistent power: power = E_f * sum_g nuSf_g * phi_g / nu_bar.
     nuSigma_f columns (one per group) are read from the raw (un-normalized) node
-    feature tensor. Matches data generation/power.py exactly for any group count G.
+    feature tensor. Matches data_generation/power.py exactly for any group count G.
     `nusf_cols` are the node-feature column indices of nuSf_0..nuSf_{G-1} (see
     features.NodeLayout.nusf_cols)."""
     def __init__(self, energy_per_fission_j: float, nusf_cols, nu_bar: float = 1.0):

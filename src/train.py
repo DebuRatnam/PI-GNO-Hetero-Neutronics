@@ -68,7 +68,7 @@ def main():
 
     norm = fit_norm_on_train(train_paths, device,
                              node_passthrough=layout.passthrough_cols)
-    energy_pf = 3.2e-11  # keep consistent with data generation/config.py
+    energy_pf = 3.2e-11  # keep consistent with data_generation/config.py
     model = PIGNO(cfg.model, energy_pf).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.train.lr,
                             weight_decay=cfg.train.weight_decay)

@@ -68,7 +68,7 @@ with a validated sparse eigensolver (SciPy `splu` power iteration); store fluxes
 Keep the **physics graph** separate from the **message graph**:
 
 - The physics graph is the FEM triangulation (`elements`). It defines `A`, `F`, and the PDE residual.
-- The message graph is a **kNN graph** on the mesh nodes by default (fixed degree → clean batching / GPU utilization); a radius/FRNN path remains available. It supports neural communication and may be richer than the FEM adjacency.
+- The message graph is a **kNN graph** on the mesh nodes (`knn_k` neighbors, fixed degree → clean batching / GPU utilization). It supports neural communication and may be richer than the FEM adjacency. There is no FRNN/radius path.
 
 Before training, verify shapes, finite values, symmetry/consistency properties appropriate to the discretization, nonempty boundary masks, sparse-matrix dimensions `[GN, GN]` (group-major), and a small residual for every reference solution. Never reconstruct `A` or `F` from a lossy neural graph if the assembled operators are available.
 
@@ -99,7 +99,7 @@ L_PDE = mean(R^2)
 L_BC = mean(phi_hat[boundary_mask]^2)
 ```
 
-`L_flux` is flux MSE and `L_k` is `k_eff` MSE. The initial benchmark uses vacuum boundaries. Compute PDE residuals with the physics operators and compatible flux-vector ordering; do not use the FRNN graph as a substitute. Tune and log all loss weights, normalization choices, solver tolerances, split seeds, and model hyperparameters.
+`L_flux` is flux MSE and `L_k` is `k_eff` MSE. The initial benchmark uses vacuum boundaries. Compute PDE residuals with the physics operators and compatible flux-vector ordering; do not use the message graph as a substitute. Tune and log all loss weights, normalization choices, solver tolerances, split seeds, and model hyperparameters.
 
 ## Reporting Minimums
 

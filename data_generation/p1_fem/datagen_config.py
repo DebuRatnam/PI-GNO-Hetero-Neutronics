@@ -106,19 +106,13 @@ class SolverConfig:
 @dataclass(frozen=True)
 class GraphConfig:
     # Message graph (NEURAL). Kept separate from the P1-FEM physics graph that
-    # defines A/F. Default connectivity is a kNN graph on the mesh nodes: every
-    # node connects to its `knn_k` nearest neighbors (symmetric closure). Fixed
-    # degree gives clean batching + good GPU utilization on variable-N samples and
-    # avoids the ragged-degree / radius-tuning sensitivity of a radius graph on the
-    # structured hex mesh (dense interior vs. thin sodium gaps).
-    graph_method: str = "knn"         # "knn" (default) or "radius"
+    # defines A/F. Connectivity is a kNN graph on the mesh nodes: every node connects
+    # to its `knn_k` nearest neighbors (symmetric closure). Fixed degree gives clean
+    # batching + good GPU utilization on variable-N samples and avoids the
+    # ragged-degree / radius-tuning sensitivity of a radius graph on the structured
+    # hex mesh (dense interior vs. thin sodium gaps).
     knn_k: int = 10                   # neighbors per node for the kNN message graph
-    # Radius graph (legacy / FRNN path, used only when graph_method="radius").
-    # Must exceed in-hex node spacing (~pitch/(2*hex_subdiv)) so nodes connect
-    # across the thin sodium gap, yet stay small enough that degree stays bounded.
-    frnn_radius: float = 7.0          # ~ 1.4 * in-hex node spacing (subdiv=2, pitch 18.7)
     edge_feature_dim: int = 8         # see edge_feature_order in metadata()
-    include_diagonals: bool = True    # DEPRECATED: unused; kept for config back-compat
 
 
 @dataclass(frozen=True)
@@ -315,8 +309,7 @@ class DataGenConfig:
             "spectrum": spectrum,
             "boundary_condition": "vacuum (Marshak partial-current Robin term on boundary edges, alpha=0.5)",
             "material_encoding": "one-hot [" + ", ".join(MATERIAL_ORDER) + "]",
-            "graph_construction": (f"{self.graph.graph_method} message graph on mesh "
-                                   "nodes; no hardcoded neighbors"),
+            "graph_construction": "kNN message graph on mesh nodes; no hardcoded neighbors",
             "geometry_model": geometry_model,
             # Canonical edge feature order (8 dims). Keep in sync with
             # graph_build.build_message_graph and src/config.ModelConfig.edge_in_dim.
