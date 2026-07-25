@@ -141,6 +141,43 @@ def load_cached_library(path: str):
     return lib, blob
 
 
+def blend_xs(follower: MultiGroupXS, absorber: MultiGroupXS, frac: float
+             ) -> MultiGroupXS:
+    """Gray-rod blend of a withdrawn (follower) and inserted (absorber) control XS.
+
+    `frac` in [0,1] is the partial-insertion / rod-worth fraction: frac=0 -> pure
+    follower, frac=1 -> pure absorber, between -> a partially-inserted control
+    element represented as an axially-averaged gray absorber (the standard way to
+    carry an axial insertion depth into a 2D radial model).
+
+    Macroscopic cross sections (Sr, scatter, nuSf) blend LINEARLY -- volume/worth
+    weighted homogenization of a partially-present absorber. The diffusion
+    coefficient blends via its transport cross section Sigma_tr = 1/(3D): linear in
+    Sigma_tr then inverted, which reduces to the worth-weighted HARMONIC mean of D.
+    This is physically consistent (averaging D directly is not).
+
+    The endpoints frac<=0 / frac>=1 short-circuit to the exact follower / absorber
+    objects, so binary insertion stays byte-identical to the pre-gray-rod pipeline.
+    """
+    G = follower.n_groups
+    if absorber.n_groups != G:
+        raise ValueError("follower and absorber must share group count")
+    t = float(min(max(frac, 0.0), 1.0))
+
+    def lin(a, b):
+        return tuple((1.0 - t) * ai + t * bi for ai, bi in zip(a, b))
+
+    def blend_D(a, b):  # worth-weighted harmonic mean (linear in transport XS)
+        return tuple(1.0 / ((1.0 - t) / ai + t / bi) for ai, bi in zip(a, b))
+
+    return MultiGroupXS(
+        D=blend_D(follower.D, absorber.D),
+        Sr=lin(follower.Sr, absorber.Sr),
+        scatter=lin(follower.scatter, absorber.scatter),
+        nuSf=lin(follower.nuSf, absorber.nuSf),
+    )
+
+
 def two_group(D1, D2, Sigma_r1, Sigma_r2, Sigma_s12, nuSigma_f1, nuSigma_f2
               ) -> MultiGroupXS:
     """Backward-compatible constructor for the original 7-scalar two-group data.

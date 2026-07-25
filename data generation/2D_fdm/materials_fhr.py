@@ -32,7 +32,7 @@ from typing import Dict, List
 
 import numpy as np
 
-from xs_common import MultiGroupXS, two_group as TwoGroupXS
+from xs_common import MultiGroupXS, blend_xs, two_group as TwoGroupXS
 
 
 # Canonical material id mapping for the KP-FHR core (7-way one-hot).
@@ -143,13 +143,27 @@ def _load_openmc_cache() -> None:
 _load_openmc_cache()
 
 
-def xs_for(material: str, *, inserted: bool = True) -> MultiGroupXS:
-    """Cross sections for a material. For control/shutdown labels, `inserted=False`
-    returns the FLiBe follower XS (withdrawn element)."""
-    if material in ("control_element", "shutdown_element") and not inserted:
-        return FLIBE_FOLLOWER
-    return LIBRARY[material]
+def xs_for(material: str, *, inserted: bool = True,
+           insert_frac: float | None = None) -> MultiGroupXS:
+    """Cross sections for a material.
+
+    For control/shutdown labels, insertion is a gray-rod depth in [0,1]: pass
+    `insert_frac` for a partially-inserted element (0 = withdrawn FLiBe follower,
+    1 = full B4C absorber, between = axially-averaged blend; see xs_common.blend_xs).
+    `inserted` is the legacy binary switch, used only when `insert_frac` is None.
+    Non-control materials ignore both.
+    """
+    if material not in ("control_element", "shutdown_element"):
+        return LIBRARY[material]
+    frac = (1.0 if inserted else 0.0) if insert_frac is None else float(insert_frac)
+    if frac >= 1.0:
+        return LIBRARY[material]              # exact absorber (byte-compatible)
+    if frac <= 0.0:
+        return FLIBE_FOLLOWER                 # exact follower (byte-compatible)
+    return blend_xs(FLIBE_FOLLOWER, LIBRARY[material], frac)
 
 
-def xs_for_id(material_id: int, *, inserted: bool = True) -> MultiGroupXS:
-    return xs_for(ID_TO_MATERIAL[material_id], inserted=inserted)
+def xs_for_id(material_id: int, *, inserted: bool = True,
+              insert_frac: float | None = None) -> MultiGroupXS:
+    return xs_for(ID_TO_MATERIAL[material_id], inserted=inserted,
+                  insert_frac=insert_frac)

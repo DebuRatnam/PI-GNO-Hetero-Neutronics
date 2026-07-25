@@ -199,13 +199,18 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
     ctrl = _pick_control(roles, hx)
     roles.update(ctrl)
 
-    # control insertion state (subset of the 13 inserted)
-    frac = (float(rng.uniform(*hx.control_insert_fraction)) if insert_fraction is None
-            else insert_fraction)
+    # per-rod control insertion DEPTH (gray-rod, in [0,1]): each control assembly is
+    # drawn independently over the configured range (or pinned when insert_fraction
+    # is given). depth=0 -> withdrawn (sodium follower), depth=1 -> full B4C absorber,
+    # between -> a partially-inserted rod carried as an axially-averaged gray absorber
+    # (materials.xs_for). Generalizes the old binary insert/withdraw and densely fills
+    # the reactivity axis; real cores hold rods at intermediate heights to trim k_eff.
     ctrl_cells = list(ctrl.keys())
-    n_ins = int(round(frac * len(ctrl_cells)))
-    ins_sel = set(map(tuple, rng.permutation(np.array(ctrl_cells)).tolist()[:n_ins])) \
-        if ctrl_cells else set()
+    if insert_fraction is None:
+        depths = rng.uniform(*hx.control_insert_fraction, size=len(ctrl_cells))
+    else:
+        depths = np.full(len(ctrl_cells), float(insert_fraction))
+    depth_by_cell = {tuple(c): float(d) for c, d in zip(ctrl_cells, depths)}
 
     # build per-hex submeshes
     coords_parts, mat_parts, elem_parts = [], [], []
@@ -222,7 +227,7 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
         hex_outer_nodes.append([i + node_offset for i in outer_idx])
         hex_centers.append(center)
         hex_meta.append({"qr": (q, r), "mat": int(roles[(q, r)]),
-                         "inserted": (q, r) in ins_sel})
+                         "depth": depth_by_cell.get((q, r), 0.0)})
         node_offset += c.shape[0]
 
     coords = np.concatenate(coords_parts, axis=0)
@@ -276,13 +281,13 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
     elements, areas = elements[keepA], areas[keepA]
 
     # --- per-node cross sections (control insertion + per-assembly XS perturbation) ---
-    hex_inserted = np.array([m["inserted"] for m in hex_meta] + [False])  # -1 -> False
+    hex_depth = np.array([m["depth"] for m in hex_meta] + [1.0])  # -1 (gap) -> unused
     perturb = 1.0 + rng.uniform(-hx.xs_perturb, hx.xs_perturb, size=len(hex_meta) + 1)
     cross_sections = np.zeros((coords.shape[0], 7))
     for n in range(coords.shape[0]):
         h = node_hex[n]
-        inserted = bool(hex_inserted[h]) if h >= 0 else True
-        xs = np.array(xs_for_id(int(material_state[n]), inserted=inserted).as_row())
+        depth = float(hex_depth[h]) if h >= 0 else 1.0   # gap = coolant, depth ignored
+        xs = np.array(xs_for_id(int(material_state[n]), insert_frac=depth).as_row())
         xs[5:7] *= perturb[h]            # perturb fissile production per assembly
         cross_sections[n] = xs
 
@@ -322,8 +327,11 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
         "enrichment_boundary_ring": enrichment_boundary,
         "n_primary_control": sum(1 for m in hex_meta if m["mat"] == MATERIAL_IDS["primary_control"]),
         "n_secondary_control": sum(1 for m in hex_meta if m["mat"] == MATERIAL_IDS["secondary_control"]),
-        "control_insert_fraction": frac,
-        "n_control_inserted": int(n_ins),
+        "control_insert_range": [float(hx.control_insert_fraction[0]),
+                                 float(hx.control_insert_fraction[1])],
+        "mean_control_depth": float(depths.mean()) if len(depths) else 0.0,
+        "control_depths": [float(d) for d in depths],
+        "n_control_inserted": int((depths > 0.0).sum()),
         "core_area_cm2": float(nodal_volume.sum()),
         "material_counts": counts,
     }

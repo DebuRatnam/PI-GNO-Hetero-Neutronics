@@ -39,7 +39,7 @@ from typing import Dict, List
 
 import numpy as np
 
-from xs_common import MultiGroupXS, two_group as TwoGroupXS
+from xs_common import MultiGroupXS, blend_xs, two_group as TwoGroupXS
 
 
 # Canonical material id mapping (kept stable; embedded in metadata).
@@ -169,13 +169,27 @@ def _load_openmc_cache() -> None:
 _load_openmc_cache()
 
 
-def xs_for(material: str, *, inserted: bool = True) -> MultiGroupXS:
-    """Cross sections for a material. For control labels, `inserted=False` returns
-    the sodium follower XS (withdrawn rod)."""
-    if material in ("primary_control", "secondary_control") and not inserted:
-        return CONTROL_FOLLOWER
-    return LIBRARY[material]
+def xs_for(material: str, *, inserted: bool = True,
+           insert_frac: float | None = None) -> MultiGroupXS:
+    """Cross sections for a material.
+
+    For control labels, insertion is a gray-rod depth in [0,1]: pass `insert_frac`
+    for a partially-inserted rod (0 = withdrawn sodium follower, 1 = full absorber,
+    between = axially-averaged blend; see xs_common.blend_xs). `inserted` is the
+    legacy binary switch, used only when `insert_frac` is None (True -> 1, False ->
+    0), so existing callers are unchanged. Non-control materials ignore both.
+    """
+    if material not in ("primary_control", "secondary_control"):
+        return LIBRARY[material]
+    frac = (1.0 if inserted else 0.0) if insert_frac is None else float(insert_frac)
+    if frac >= 1.0:
+        return LIBRARY[material]              # exact absorber (byte-compatible)
+    if frac <= 0.0:
+        return CONTROL_FOLLOWER               # exact follower (byte-compatible)
+    return blend_xs(CONTROL_FOLLOWER, LIBRARY[material], frac)
 
 
-def xs_for_id(material_id: int, *, inserted: bool = True) -> MultiGroupXS:
-    return xs_for(ID_TO_MATERIAL[material_id], inserted=inserted)
+def xs_for_id(material_id: int, *, inserted: bool = True,
+              insert_frac: float | None = None) -> MultiGroupXS:
+    return xs_for(ID_TO_MATERIAL[material_id], inserted=inserted,
+                  insert_frac=insert_frac)

@@ -168,8 +168,9 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
                      rng: Optional[np.random.Generator] = None) -> CoreGeometry:
     """Build one frozen KP-FHR pebble-bed sample -> CoreGeometry.
 
-    insert_control / insert_shutdown are the FRACTION of the control / shutdown
-    elements inserted (absorber XS); the rest use the FLiBe follower.
+    insert_control / insert_shutdown are the gray-rod insertion DEPTH in [0,1] of the
+    control / shutdown bank: 0 = withdrawn (FLiBe follower), 1 = full B4C absorber,
+    between = partially inserted (axially-averaged gray absorber, materials_fhr.xs_for).
     graphite_pebble_frac overrides the config default (per-sample reactivity lever).
     """
     rng = rng or np.random.default_rng()
@@ -254,13 +255,13 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     material_state = np.asarray(mats, dtype=np.int64)
     N = coords.shape[0]
 
-    # insertion state per structure (deterministic by fraction)
-    n_ci = int(round(insert_control * cfg.n_control))
-    n_si = int(round(insert_shutdown * cfg.n_shutdown))
-    ctrl_ins = np.zeros(cfg.n_control, bool); ctrl_ins[:n_ci] = True
-    shut_ins = np.zeros(cfg.n_shutdown, bool); shut_ins[:n_si] = True
-    ctree = cKDTree(ctrl) if len(ctrl) else None
-    stree = cKDTree(shut) if len(shut) else None
+    # control / shutdown bank insertion DEPTHS (gray-rod, in [0,1]): applied to every
+    # element of each bank (banked elements ride at a common height). depth=0 ->
+    # withdrawn (FLiBe follower), depth=1 -> full B4C absorber, between -> partially
+    # inserted as an axially-averaged gray absorber (materials_fhr.xs_for). Densely
+    # fills the reactivity axis; real cores trim k_eff at intermediate insertion.
+    ctrl_depth = float(min(max(insert_control, 0.0), 1.0))
+    shut_depth = float(min(max(insert_shutdown, 0.0), 1.0))
 
     # triangulate the full cloud (convex disk -> no exterior holes)
     tri = Delaunay(coords)
@@ -279,12 +280,12 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     xs = np.zeros((N, ncol))
     for i in range(N):
         m = material_state[i]
-        inserted = True
-        if m == ctrl_id and ctree is not None:
-            inserted = bool(ctrl_ins[ctree.query(coords[i])[1]])
-        elif m == shut_id and stree is not None:
-            inserted = bool(shut_ins[stree.query(coords[i])[1]])
-        xs[i] = xs_for_id(m, inserted=inserted).as_row()
+        if m == ctrl_id:
+            xs[i] = xs_for_id(m, insert_frac=ctrl_depth).as_row()
+        elif m == shut_id:
+            xs[i] = xs_for_id(m, insert_frac=shut_depth).as_row()
+        else:
+            xs[i] = xs_for_id(m).as_row()
 
     # burnup/recirculation proxy: perturb fuel-pebble nuSf
     fuel_mask = material_state == MATERIAL_IDS["fuel_pebble"]
@@ -303,8 +304,11 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         "graphite_pebble_frac": float(cfg.graphite_pebble_frac),
         "packing_fraction_actual": float(
             n_peb * cfg.r_peb ** 2 / (cfg.R_bed ** 2 - cfg.R_center_refl ** 2)),
-        "n_control": int(cfg.n_control), "n_control_inserted": int(n_ci),
-        "n_shutdown": int(cfg.n_shutdown), "n_shutdown_inserted": int(n_si),
+        "n_control": int(cfg.n_control),
+        "n_control_inserted": int(cfg.n_control) if ctrl_depth > 0.0 else 0,
+        "n_shutdown": int(cfg.n_shutdown),
+        "n_shutdown_inserted": int(cfg.n_shutdown) if shut_depth > 0.0 else 0,
+        "control_depth": ctrl_depth, "shutdown_depth": shut_depth,
         "insert_control": float(insert_control), "insert_shutdown": float(insert_shutdown),
         "R_center_refl": cfg.R_center_refl, "R_fuel_in": cfg.R_fuel_in,
         "R_fuel_out": cfg.R_fuel_out, "R_bed": cfg.R_bed,
