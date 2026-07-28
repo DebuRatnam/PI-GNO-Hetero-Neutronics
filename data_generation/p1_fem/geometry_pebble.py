@@ -37,8 +37,8 @@ from scipy.spatial import Delaunay, cKDTree
 
 from datagen_config import PebbleCoreConfig
 from geometry import CoreGeometry, triangle_areas, nodal_volumes
-from materials_fhr import MATERIAL_IDS, xs_for_id, up_scatter_for_id
-from xs_common import nusf_slice, sr_slice
+from materials_fhr import BRANCH, MATERIAL_IDS, xs_for_id, up_scatter_for_id
+from xs_common import n_xs_cols, nusf_slice, sr_slice
 
 
 # --- footprint tests ---------------------------------------------------------
@@ -280,35 +280,74 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     boundary_mask[np.unique(boundary_edges)] = True
     V = nodal_volumes(coords, elements, areas)
 
-    # per-node cross sections; insertion toggles absorber XS for control/shutdown
-    ncol = len(xs_for_id(0).as_row())
+    # --- per-node cross sections -------------------------------------------------
+    # Insertion toggles absorber XS for control/shutdown. Burnup and temperature vary
+    # PER PEBBLE: recirculation means pebbles of every burnup coexist at every radius,
+    # which is the physical state this dataset covers.
+    fuel_mask = material_state == MATERIAL_IDS["fuel_pebble"]
+    G = len(xs_for_id(0).D)
+    ncol = n_xs_cols(G)
+    nf, sr = nusf_slice(G), sr_slice(G)
     xs = np.zeros((N, ncol))
+
+    # core-average insertion over BOTH control families: the spectrum shift inserted
+    # absorbers impose on every other material (measured by the rod branch cases).
+    all_depths = np.concatenate([ctrl_depths, shut_depths]) if (
+        len(ctrl_depths) or len(shut_depths)) else np.zeros(0)
+    core_rod_frac = float(all_depths.mean()) if all_depths.size else 0.0
+
+    if BRANCH is not None:
+        # OpenMC branch table: physical burnup [MWd/kgHM] + temperature [K] per node.
+        burn_mwd = rng.uniform(*cfg.burnup_mwd_kg_range, N)
+        temp_k = rng.uniform(*cfg.temperature_k_range, N)
+        burn_mwd[~fuel_mask] = 0.0
+        legacy_perturb = False
+    else:
+        burn = rng.uniform(0.0, cfg.burnup_perturb, N)
+        temp = 1.0 + rng.uniform(-cfg.temp_perturb, cfg.temp_perturb, N)
+        legacy_perturb = True
+
+    depth_per_node = np.zeros(N)
     for i in range(N):
-        m = material_state[i]
+        m = int(material_state[i])
         if m == ctrl_id and ctree_d is not None:
             d = float(ctrl_depths[ctree_d.query(coords[i])[1]])   # this element's depth
-            xs[i] = xs_for_id(m, insert_frac=d).as_row()
         elif m == shut_id and stree_d is not None:
             d = float(shut_depths[stree_d.query(coords[i])[1]])
+        else:
+            d = 1.0                                               # ignored by non-control
+        depth_per_node[i] = d
+        if legacy_perturb:
             xs[i] = xs_for_id(m, insert_frac=d).as_row()
         else:
-            xs[i] = xs_for_id(m).as_row()
+            xs[i] = xs_for_id(m, insert_frac=d, burnup_mwd_kg=float(burn_mwd[i]),
+                              temperature_k=float(temp_k[i]),
+                              core_rod_frac=core_rod_frac).as_row()
 
-    # burnup + temperature proxy (fuel pebbles only). DIRECTIONAL: fissile depletion
-    # lowers nuSf; fission-product poison (Xe/Sm) raises the THERMAL removal Sr2. temp
-    # is a small symmetric +/- wiggle on nuSf (see PebbleCoreConfig).
-    fuel_mask = material_state == MATERIAL_IDS["fuel_pebble"]
-    nf = nusf_slice(2); sr = sr_slice(2)
-    burn = rng.uniform(0.0, cfg.burnup_perturb, N)
-    temp = 1.0 + rng.uniform(-cfg.temp_perturb, cfg.temp_perturb, N)
-    xs[fuel_mask, nf] *= ((1.0 - burn[fuel_mask]) * temp[fuel_mask])[:, None]
-    xs[fuel_mask, sr.start + 1] *= (1.0 + cfg.burnup_poison_coeff * burn[fuel_mask])  # Sr2 poison
+    if legacy_perturb:
+        # fallback (no OpenMC table): DIRECTIONAL fissile depletion lowers nuSf, and
+        # fission-product poison (Xe/Sm) raises the THERMAL removal Sr2; temp is a
+        # symmetric +/- wiggle on nuSf. See PebbleCoreConfig. NOT publication-grade.
+        xs[fuel_mask, nf] *= ((1.0 - burn[fuel_mask]) * temp[fuel_mask])[:, None]
+        xs[fuel_mask, sr.start + 1] *= (
+            1.0 + cfg.burnup_poison_coeff * burn[fuel_mask])   # Sr2 poison
 
     control_rod_cells = np.where(np.isin(material_state, [ctrl_id, shut_id]))[0].astype(np.int64)
 
-    # per-node thermal up-scatter Ss_{g2->g1} (moderators only); assembled into A by
+    # per-node thermal up-scatter Ss_{g2->g1}; assembled into A by
     # operators.assemble_AF. Kept out of the per-node XS row (schema down-scatter-only).
-    upscatter = np.array([up_scatter_for_id(int(m)) for m in material_state], dtype=float)
+    # With a branch table this is the tallied g2->g1 transfer at the node's own
+    # temperature -- up-scatter IS a thermal-motion effect, so that matters.
+    if legacy_perturb:
+        upscatter = np.array([up_scatter_for_id(int(m)) for m in material_state],
+                             dtype=float)
+    else:
+        upscatter = np.array([
+            up_scatter_for_id(int(material_state[i]), insert_frac=depth_per_node[i],
+                              burnup_mwd_kg=float(burn_mwd[i]),
+                              temperature_k=float(temp_k[i]),
+                              core_rod_frac=core_rod_frac)
+            for i in range(N)], dtype=float)
 
     meta = {
         "reactor_type": "fhr",

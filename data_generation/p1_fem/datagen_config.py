@@ -144,10 +144,19 @@ class HexCoreConfig:
     n_secondary_control: int = 4
     control_insert_fraction: Tuple[float, float] = (0.0, 1.0)  # frac of rods inserted
 
-    # burnup + temperature proxy (per assembly). xs_perturb is a small SYMMETRIC +/-
-    # temperature/density wiggle on nuSf; burnup is DIRECTIONAL (fuel only): fissile
-    # depletion lowers nuSf by up to burnup_max, and fission-product poison raises
-    # removal by burnup_poison_coeff*burnup.
+    # Per-assembly burnup + temperature spread.
+    #
+    # PRIMARY PATH (OpenMC branch table present): a burnup [MWd/kgHM] and a
+    # temperature [K] are drawn per assembly from these ranges and looked up in the
+    # branch table, so depletion and Doppler are computed quantities.
+    burnup_mwd_kg_range: Tuple[float, float] = (0.0, 80.0)
+    temperature_k_range: Tuple[float, float] = (750.0, 1000.0)
+    #
+    # FALLBACK PATH (no table): the original ad-hoc perturbation. xs_perturb is a
+    # small SYMMETRIC +/- temperature/density wiggle on nuSf; burnup is DIRECTIONAL
+    # (fuel only): fissile depletion lowers nuSf by up to burnup_max, and
+    # fission-product poison raises removal by burnup_poison_coeff*burnup. Kept so
+    # the generator still runs without OpenMC -- NOT publication-grade.
     xs_perturb: float = 0.03          # symmetric +/- temperature/density wiggle (nuSf)
     burnup_max: float = 0.12          # max burnup fraction (directional depletion)
     burnup_poison_coeff: float = 0.30 # removal rise per unit burnup (fission products)
@@ -203,10 +212,20 @@ class PebbleCoreConfig:
     x_arm_w: float = 3.0              # X bar width
 
     coolant_step_frac: float = 1.5    # interstitial coolant grid step / r_peb
-    # burnup + temperature proxy (per fuel pebble). burnup_perturb is the max burnup
-    # FRACTION: fissile depletion lowers nuSf, and fission-product poison (Xe/Sm)
-    # raises the THERMAL removal Sr2 by burnup_poison_coeff*burnup (strong in a thermal
-    # core). temp_perturb is a small symmetric +/- temperature/density wiggle on nuSf.
+    # Per-pebble burnup + temperature spread. In a pebble bed this is real physical
+    # variability: recirculation means pebbles of every burnup coexist at every
+    # radius, which is exactly the state this dataset is meant to cover.
+    #
+    # PRIMARY PATH (OpenMC branch table present): burnup [MWd/kgHM] and temperature
+    # [K] are drawn per pebble from these ranges and looked up in the branch table,
+    # so depletion (including Xe/Sm poisoning) and Doppler are computed.
+    burnup_mwd_kg_range: Tuple[float, float] = (0.0, 100.0)
+    temperature_k_range: Tuple[float, float] = (900.0, 1100.0)
+    #
+    # FALLBACK PATH (no table): the original ad-hoc perturbation. burnup_perturb is
+    # the max burnup FRACTION: fissile depletion lowers nuSf, and fission-product
+    # poison (Xe/Sm) raises the THERMAL removal Sr2 by burnup_poison_coeff*burnup.
+    # temp_perturb is a symmetric +/- wiggle on nuSf. NOT publication-grade.
     burnup_perturb: float = 0.10      # max burnup fraction (directional depletion)
     burnup_poison_coeff: float = 0.60 # thermal-removal rise per unit burnup (poison)
     temp_perturb: float = 0.03        # symmetric +/- temperature/density wiggle (nuSf)
@@ -260,7 +279,7 @@ class DataGenConfig:
         from xs_common import xs_col_names   # local import avoids any load-order cycle
         G = self.physics.n_groups
         if self.reactor_type == "fhr":
-            from materials_fhr import MATERIAL_ORDER
+            from materials_fhr import MATERIAL_ORDER, branch_metadata
             core_cfg, core_key = asdict(self.pebblecore), "pebblecore"
             discretization = ("P1 finite elements on a KP-FHR pebble-bed core: "
                               "RSA-packed pebble nodes + FLiBe coolant, Delaunay "
@@ -274,7 +293,7 @@ class DataGenConfig:
                               "reflector + steel vessel")
             node_index_order = "pebbles first, then coolant/structure/reflector/vessel fill; see elements[T,3]"
         else:
-            from materials import MATERIAL_ORDER
+            from materials import MATERIAL_ORDER, branch_metadata
             core_cfg, core_key = asdict(self.hexcore), "hexcore"
             discretization = ("P1 finite elements on a hexagonal-duct core: structured "
                               "triangulation per assembly + Delaunay-stitched sodium gaps "
@@ -291,7 +310,19 @@ class DataGenConfig:
                               + xs_col_names(G)
                               + ["boundary_flag"])
 
+        # Where the cross sections came from. This is the provenance a reviewer needs
+        # to judge the labels: transport code + version, evaluated nuclear data
+        # library, weighting spectrum, branch grid, per-branch k_eff, Monte Carlo
+        # uncertainty. Absent table -> say so plainly rather than implying rigor.
+        xs_prov = branch_metadata() or {
+            "source": "hand-tuned committed library (no OpenMC branch table present)",
+            "weighting": "none -- representative order-of-magnitude constants",
+            "warning": ("these constants are NOT traceable to an evaluated nuclear "
+                        "data library; run xs_openmc.py before publishing results"),
+        }
+
         return {
+            "xs_provenance": xs_prov,
             "reactor_type": self.reactor_type,
             "n_groups": G,
             "n_materials": len(MATERIAL_ORDER),

@@ -35,10 +35,12 @@ the off-diagonal down-scatter source into group 2.
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List
 
 import numpy as np
 
+from xs_branch import load_branch_table
 from xs_common import MultiGroupXS, blend_xs, two_group as TwoGroupXS
 
 
@@ -162,26 +164,42 @@ CONTROL_FOLLOWER: MultiGroupXS = TwoGroupXS(
 )
 
 
-# If an OpenMC-generated cache (xs_natrium.json, see xs_openmc.py) sits next to this
-# module, override the matching hand-tuned entries with the traceable constants.
-# Absent -> keep the committed defaults so the pipeline runs without OpenMC.
-def _load_openmc_cache() -> None:
-    import os
-    from xs_common import load_cached_library
-    cache = os.path.join(os.path.dirname(__file__), "xs_natrium.json")
-    lib, _ = load_cached_library(cache)
-    if lib:
-        for name, xs in lib.items():
-            if name in LIBRARY:
-                LIBRARY[name] = xs
+# --- OpenMC branch table -----------------------------------------------------
+# If an OpenMC branch table (xs_natrium.json, see xs_openmc.py) sits next to this
+# module, it becomes the source of truth: constants are looked up per (burnup,
+# temperature, control insertion) instead of being read off the hand library and
+# multiplied by ad-hoc burnup/temperature factors. Absent -> the committed defaults
+# below are used unchanged, so the pipeline still runs without OpenMC.
+
+BRANCH_TABLE_PATH = os.path.join(os.path.dirname(__file__), "xs_natrium.json")
+BRANCH = load_branch_table(BRANCH_TABLE_PATH)
 
 
-_load_openmc_cache()
+def branch_metadata() -> dict | None:
+    """Provenance block for geometry_metadata, or None when running hand data."""
+    return BRANCH.metadata() if BRANCH is not None else None
+
+
+def branch_chi(*, burnup_mwd_kg: float = 0.0, temperature_k: float | None = None,
+               core_rod_frac: float = 0.0):
+    """Tallied core-average fission spectrum, or None (falls back to CHI)."""
+    if BRANCH is None:
+        return None
+    return BRANCH.chi(burnup_mwd_kg=burnup_mwd_kg, temperature_k=temperature_k,
+                      core_rod_frac=core_rod_frac)
 
 
 def xs_for(material: str, *, inserted: bool = True,
-           insert_frac: float | None = None) -> MultiGroupXS:
-    """Cross sections for a material.
+           insert_frac: float | None = None,
+           burnup_mwd_kg: float = 0.0, temperature_k: float | None = None,
+           core_rod_frac: float = 0.0) -> MultiGroupXS:
+    """Cross sections for a material at a core state.
+
+    With an OpenMC branch table loaded, (burnup_mwd_kg, temperature_k,
+    core_rod_frac) select an interpolated branch case -- burnt isotopics, Doppler-
+    broadened data, and the rodded/unrodded spectrum are all measured quantities.
+    Without one, the hand library is returned and those arguments are ignored (the
+    caller then applies its documented legacy perturbation instead).
 
     For control labels, insertion is a gray-rod depth in [0,1]: pass `insert_frac`
     for a partially-inserted rod (0 = withdrawn sodium follower, 1 = full absorber,
@@ -189,9 +207,18 @@ def xs_for(material: str, *, inserted: bool = True,
     legacy binary switch, used only when `insert_frac` is None (True -> 1, False ->
     0), so existing callers are unchanged. Non-control materials ignore both.
     """
-    if material not in ("primary_control", "secondary_control"):
-        return LIBRARY[material]
+    is_control = material in ("primary_control", "secondary_control")
     frac = (1.0 if inserted else 0.0) if insert_frac is None else float(insert_frac)
+
+    if BRANCH is not None and BRANCH.has(material):
+        got = BRANCH.lookup(material, burnup_mwd_kg=burnup_mwd_kg,
+                            temperature_k=temperature_k, insert_frac=frac,
+                            core_rod_frac=core_rod_frac)
+        if got is not None:
+            return got[0]
+
+    if not is_control:
+        return LIBRARY[material]
     if frac >= 1.0:
         return LIBRARY[material]              # exact absorber (byte-compatible)
     if frac <= 0.0:
@@ -200,6 +227,9 @@ def xs_for(material: str, *, inserted: bool = True,
 
 
 def xs_for_id(material_id: int, *, inserted: bool = True,
-              insert_frac: float | None = None) -> MultiGroupXS:
+              insert_frac: float | None = None,
+              burnup_mwd_kg: float = 0.0, temperature_k: float | None = None,
+              core_rod_frac: float = 0.0) -> MultiGroupXS:
     return xs_for(ID_TO_MATERIAL[material_id], inserted=inserted,
-                  insert_frac=insert_frac)
+                  insert_frac=insert_frac, burnup_mwd_kg=burnup_mwd_kg,
+                  temperature_k=temperature_k, core_rod_frac=core_rod_frac)

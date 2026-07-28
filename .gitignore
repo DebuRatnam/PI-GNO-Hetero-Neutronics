@@ -31,3 +31,22 @@ dist/
 
 # Logs
 *.log
+
+# OpenMC offline runs (scratch). The RESULTS -- xs_natrium.json / xs_fhr.json and
+# depletion_*.json -- are deliberately NOT ignored: they are the traceable inputs a
+# reviewer needs to reproduce the dataset without installing OpenMC.
+openmc_run/
+depletion_run/
+statepoint.*.h5
+summary.h5
+depletion_results.h5
+tallies.out
+geometry.xml
+materials.xml
+settings.xml
+tallies.xml
+model.xml
+
+# OpenMC smoke-test artifacts (short runs, not publication grade)
+data_generation/p1_fem/openmc_run/
+data_generation/p1_fem/.packing_cache/

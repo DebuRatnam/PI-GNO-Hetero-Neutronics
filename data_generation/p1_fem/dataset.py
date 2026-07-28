@@ -90,9 +90,19 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
     # come from the material module (fast core vs thermal pebble bed differ). Only the
     # module chi is applied when its length matches n_groups (the hand libraries are
     # G=2); an explicit multigroup chi in cfg.physics is otherwise preserved.
+    #
+    # With an OpenMC branch table loaded, chi is the TALLIED core-average fission
+    # spectrum at this core's state rather than a hand value -- it shifts with burnup
+    # (Pu-239 births harder than U-235) and with rod insertion.
     mod = _mat_module(cfg.reactor_type)
     chi = (mod.CHI if getattr(mod, "CHI", None) is not None
            and len(mod.CHI) == cfg.physics.n_groups else cfg.physics.chi)
+    tallied_chi = None
+    if getattr(mod, "BRANCH", None) is not None:
+        tallied_chi = mod.branch_chi(
+            core_rod_frac=float(geom.assembly_metadata.get("mean_control_depth", 0.0)))
+    if tallied_chi is not None and len(tallied_chi) == cfg.physics.n_groups:
+        chi = tallied_chi
     physics = replace(cfg.physics, chi=chi,
                       axial_buckling=getattr(mod, "AXIAL_BUCKLING_CM2",
                                              cfg.physics.axial_buckling))
@@ -162,7 +172,11 @@ def load_sample(path: str) -> dict:
     out = {k: z[k] for k in z.files
            if not k.startswith(("A_", "F_")) and k != "geometry_metadata"}
     out["A"], out["F"] = A, F
-    out["geometry_metadata"] = eval(str(z["geometry_metadata"]))  # trusted local file
+    # trusted local file. `nan`/`inf` can appear in the metadata (e.g. a Monte Carlo
+    # statistic that never converged), and repr() emits them bare, so bind them.
+    out["geometry_metadata"] = eval(
+        str(z["geometry_metadata"]),
+        {"__builtins__": {}, "nan": float("nan"), "inf": float("inf")})
     return out
 
 

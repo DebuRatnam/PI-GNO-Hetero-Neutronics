@@ -28,10 +28,12 @@ Two-group storage per material (via the MultiGroupXS G=2 constructor):
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List
 
 import numpy as np
 
+from xs_branch import load_branch_table
 from xs_common import MultiGroupXS, blend_xs, two_group as TwoGroupXS
 
 
@@ -137,26 +139,42 @@ FLIBE_FOLLOWER: MultiGroupXS = TwoGroupXS(
 )
 
 
-# If an OpenMC-generated cache (xs_fhr.json, see xs_openmc.py) sits next to this
-# module, override the matching hand-tuned entries with the traceable constants.
-# Absent -> keep the committed defaults so the pipeline runs without OpenMC.
-def _load_openmc_cache() -> None:
-    import os
-    from xs_common import load_cached_library
-    cache = os.path.join(os.path.dirname(__file__), "xs_fhr.json")
-    lib, _ = load_cached_library(cache)
-    if lib:
-        for name, xs in lib.items():
-            if name in LIBRARY:
-                LIBRARY[name] = xs
+# --- OpenMC branch table -----------------------------------------------------
+# If an OpenMC branch table (xs_fhr.json, see xs_openmc.py) sits next to this module,
+# it becomes the source of truth: constants are looked up per (burnup, temperature,
+# insertion) instead of being read off the hand library and multiplied by ad-hoc
+# factors. Absent -> the committed defaults below are used unchanged.
+
+BRANCH_TABLE_PATH = os.path.join(os.path.dirname(__file__), "xs_fhr.json")
+BRANCH = load_branch_table(BRANCH_TABLE_PATH)
 
 
-_load_openmc_cache()
+def branch_metadata() -> dict | None:
+    """Provenance block for geometry_metadata, or None when running hand data."""
+    return BRANCH.metadata() if BRANCH is not None else None
+
+
+def branch_chi(*, burnup_mwd_kg: float = 0.0, temperature_k: float | None = None,
+               core_rod_frac: float = 0.0):
+    """Tallied core-average fission spectrum, or None (falls back to CHI)."""
+    if BRANCH is None:
+        return None
+    return BRANCH.chi(burnup_mwd_kg=burnup_mwd_kg, temperature_k=temperature_k,
+                      core_rod_frac=core_rod_frac)
 
 
 def xs_for(material: str, *, inserted: bool = True,
-           insert_frac: float | None = None) -> MultiGroupXS:
-    """Cross sections for a material.
+           insert_frac: float | None = None,
+           burnup_mwd_kg: float = 0.0, temperature_k: float | None = None,
+           core_rod_frac: float = 0.0) -> MultiGroupXS:
+    """Cross sections for a material at a core state.
+
+    With an OpenMC branch table loaded, (burnup_mwd_kg, temperature_k,
+    core_rod_frac) select an interpolated branch case: burnt isotopics (including
+    the Xe/Sm poison that the old `burnup_poison_coeff` stood in for), Doppler +
+    S(alpha,beta) temperature effects, and the rodded/unrodded spectrum are all
+    measured. Without a table the hand library is returned and those arguments are
+    ignored.
 
     For control/shutdown labels, insertion is a gray-rod depth in [0,1]: pass
     `insert_frac` for a partially-inserted element (0 = withdrawn FLiBe follower,
@@ -164,9 +182,18 @@ def xs_for(material: str, *, inserted: bool = True,
     `inserted` is the legacy binary switch, used only when `insert_frac` is None.
     Non-control materials ignore both.
     """
-    if material not in ("control_element", "shutdown_element"):
-        return LIBRARY[material]
+    is_control = material in ("control_element", "shutdown_element")
     frac = (1.0 if inserted else 0.0) if insert_frac is None else float(insert_frac)
+
+    if BRANCH is not None and BRANCH.has(material):
+        got = BRANCH.lookup(material, burnup_mwd_kg=burnup_mwd_kg,
+                            temperature_k=temperature_k, insert_frac=frac,
+                            core_rod_frac=core_rod_frac)
+        if got is not None:
+            return got[0]
+
+    if not is_control:
+        return LIBRARY[material]
     if frac >= 1.0:
         return LIBRARY[material]              # exact absorber (byte-compatible)
     if frac <= 0.0:
@@ -175,23 +202,53 @@ def xs_for(material: str, *, inserted: bool = True,
 
 
 def xs_for_id(material_id: int, *, inserted: bool = True,
-              insert_frac: float | None = None) -> MultiGroupXS:
+              insert_frac: float | None = None,
+              burnup_mwd_kg: float = 0.0, temperature_k: float | None = None,
+              core_rod_frac: float = 0.0) -> MultiGroupXS:
     return xs_for(ID_TO_MATERIAL[material_id], inserted=inserted,
-                  insert_frac=insert_frac)
+                  insert_frac=insert_frac, burnup_mwd_kg=burnup_mwd_kg,
+                  temperature_k=temperature_k, core_rod_frac=core_rod_frac)
 
 
 # Thermal UP-scatter Ss_{g2->g1} [1/cm] (thermal -> epithermal): a real effect in
 # graphite/FLiBe at KP-FHR temperature (~650 C), negligible in fuel/absorber/vessel.
 # Applied at the OPERATOR level (assembled into A: raises thermal removal + adds an
 # in-scatter source to the fast group) rather than stored in the per-node XS row,
-# which stays down-scatter-only (schema unchanged). ~an order of magnitude below the
-# fast->thermal down-scatter Ss12.
+# which stays down-scatter-only (schema unchanged).
+#
+# These committed values are the hand fallback. With an OpenMC branch table loaded
+# the up-scatter comes from the UPPER TRIANGLE of the tallied nu-scatter matrix --
+# a measured transfer rate at the branch temperature, which is the right way to get
+# it since up-scatter is precisely a thermal-motion (S(alpha,beta)) effect.
 UPSCATTER_21: Dict[str, float] = {
     "fuel_pebble": 0.0008, "graphite_pebble": 0.0025, "control_element": 0.0,
     "shutdown_element": 0.0, "reflector": 0.0022, "coolant": 0.0015, "vessel": 0.0,
 }
 
 
-def up_scatter_for_id(material_id: int) -> float:
+def up_scatter_for(material: str, *, insert_frac: float = 1.0,
+                   burnup_mwd_kg: float = 0.0, temperature_k: float | None = None,
+                   core_rod_frac: float = 0.0) -> float:
+    """Thermal->fast up-scatter Ss21 [1/cm] for a material at a core state.
+
+    Returns the G=2 up-scatter scalar. For G>2 the full up-scatter block lives in
+    the branch table; operators.assemble_AF consumes the g2->g1 term only, matching
+    the two-group operator-level treatment documented above.
+    """
+    if BRANCH is not None and BRANCH.has(material):
+        got = BRANCH.lookup(material, burnup_mwd_kg=burnup_mwd_kg,
+                            temperature_k=temperature_k, insert_frac=insert_frac,
+                            core_rod_frac=core_rod_frac)
+        if got is not None and len(got[1]):
+            return float(got[1][0])
+    return UPSCATTER_21.get(material, 0.0)
+
+
+def up_scatter_for_id(material_id: int, *, insert_frac: float = 1.0,
+                      burnup_mwd_kg: float = 0.0,
+                      temperature_k: float | None = None,
+                      core_rod_frac: float = 0.0) -> float:
     """Thermal->fast up-scatter Ss21 [1/cm] for a material id (0 if none)."""
-    return UPSCATTER_21.get(ID_TO_MATERIAL[material_id], 0.0)
+    return up_scatter_for(ID_TO_MATERIAL[material_id], insert_frac=insert_frac,
+                          burnup_mwd_kg=burnup_mwd_kg, temperature_k=temperature_k,
+                          core_rod_frac=core_rod_frac)
