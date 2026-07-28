@@ -7,12 +7,14 @@ solver / graph / model:
 
 - **`hex`** — a **Natrium-inspired hexagonal-duct core** (fast spectrum): identical
   structured submesh per assembly + Delaunay-stitched sodium gaps, explicit HT9 duct.
-- **`fhr`** — a **Kairos KP-FHR pebble bed** (thermal spectrum): an **annular** core
-  (central graphite reflector + fueled pebble annulus with fuel *and* graphite
-  moderator pebbles + outer reflector), RSA-packed pebble nodes in FLiBe, **4 B4C
-  control elements in the outer reflector** (NRC: KP-FHR control inserts into the side
-  reflector) and **3 X-shaped shutdown elements in the inner bed**, each in a
-  graphite-lined channel; steel vessel.
+- **`fhr`** — a **Kairos KP-FHR pebble bed** (thermal spectrum) at published **gFHR**
+  dimensions: a **cylindrical, full-diameter** RSA-packed bed (R=120 cm) of fuel *and*
+  graphite moderator pebbles in FLiBe → 60 cm graphite side reflector → SS316H barrel
+  + FLiBe downcomer + SS316H vessel (one homogenized ring). **10 B4C control elements
+  in the side reflector** (NRC: KP-FHR control inserts into the side reflector), each
+  in a graphite-lined channel, and **3 X-shaped shutdown elements inserted directly
+  into the packed bed** (NRC), no thimble. Not annular: KP-FHR pebbles are buoyant and
+  rise through the whole bed, so there is no central reflector column.
 
 Group count is **configurable G** (`PhysicsConfig.n_groups`; default G=2, byte-
 compatible with the original two-group data). The XS layout, node-feature width, and
@@ -46,7 +48,7 @@ physics/dataset contract.
 | `materials.py` | **8-way** cross-section library for the Natrium **fast** core (fuel_inner/outer, primary/secondary_control, reflector, shield, **duct** HT9+gap, coolant) + control insert/withdraw (`CONTROL_FOLLOWER`). Loads the OpenMC **branch table** `xs_natrium.json` if present (constants then depend on burnup / temperature / insertion), else uses committed defaults. |
 | `materials_fhr.py` | **7-way** cross-section library for the KP-FHR **thermal** core (fuel_pebble, graphite_pebble, control_element, shutdown_element, reflector, coolant=FLiBe, vessel) + insert/withdraw (`FLIBE_FOLLOWER`). Same public symbols as `materials.py`; loads the branch table `xs_fhr.json` if present. Thermal up-scatter `Ss21` comes from the tallied scatter matrix when a table is loaded, else from the committed `UPSCATTER_21`. |
 | `geometry.py` | Builds the **Natrium hex lattice** (identical structured submesh + homogenized `duct` ring + Delaunay-stitched sodium gaps, 9+4 control). Returns the `CoreGeometry` struct (nodes, `elements[T,3]`, `boundary_edges`, `nodal_volume`, per-node XS). Reusable helpers `triangle_areas`/`nodal_volumes` shared with the pebble builder. |
-| `geometry_pebble.py` | Builds the **annular KP-FHR pebble bed**: central graphite reflector column, RSA-packed fueled pebble annulus (fuel + graphite moderator pebbles) in FLiBe, **4 rigid B4C control cylinders in the outer reflector** (16-node circles in lined channels), **3 rigid X shutdown elements in the inner bed** (lined channels), steel vessel, Delaunay + **free-edge boundary**. Returns the same `CoreGeometry` struct → downstream unchanged. |
+| `geometry_pebble.py` | Builds the **cylindrical KP-FHR pebble bed** at gFHR dimensions: RSA-packed full-diameter bed (fuel + graphite moderator pebbles) in FLiBe, 60 cm graphite side reflector holding **10 rigid B4C control cylinders** (16-node circles in lined channels), **3 rigid X shutdown elements inserted directly into the bed**, SS316H barrel + FLiBe downcomer + SS316H vessel as one homogenized ring, Delaunay + **free-edge boundary**. Returns the same `CoreGeometry` struct → downstream unchanged. |
 | `operators.py` | Assembles sparse **A** (leakage/removal) and **F** (fission) → `[GN, GN]`, group-major, with **P1 finite elements** (stiffness + lumped mass + Marshak Robin vacuum BC) on `elements`. **G×G block build** driven by `n_groups` (G=2 reproduces the original two-group result). |
 | `solver.py` | Power iteration on `A⁻¹F` (one sparse LU) → `k_eff`, flux `[N,G]`, residual. G inferred from `A.shape / n_nodes`. |
 | `power.py` | Derived node power density = `E_f · Σ_g nuSf_g·φ_g` (same relation reused by the model's power head). |
@@ -144,7 +146,7 @@ cd ../../src && python3 train.py --data ../../datasets/fhr01
   poison raises removal (thermal `Sr2` in fhr); plus a symmetric temperature wiggle.
 - **Mesh** = P1 finite elements; **N varies per sample**. Hex: identical structured
   submesh per assembly (spatial invariance) + explicit `duct` (HT9+gap) + Delaunay
-  sodium gaps. FHR: annular RSA pebble bed (1 node/pebble) in FLiBe. Each sample
+  sodium gaps. FHR: cylindrical RSA pebble bed (1 node/pebble) in FLiBe. Each sample
   stores `elements[T,3]`, `boundary_edges[B,2]`, `nodal_volume[N]`, reactor metadata.
 - **Two graphs, kept separate.** Physics graph = the **FEM triangulation** (→ A, F).
   Message graph = a **kNN graph** (`knn_k`, fixed degree, no hardcoded neighbors) on
@@ -252,12 +254,15 @@ errors before committing to a production run.
 
 ### Before treating the output as benchmark-grade
 
-1. **Review the compositions** in `openmc_models.py`. They are documented
-   literature-level starting points (HALEU U-10Zr, TRISO UO₂, graphite, B4C, FLiBe,
-   sodium, HT9, Hastelloy-N), not a vendor core specification. Enrichment, densities,
-   Li-7 fraction, and TRISO/pebble dimensions should be checked against your spec.
-   Exact Hermes control-element geometry is proprietary; `r_ctrl` is the documented
-   gFHR 5.2 cm rod proxy.
+1. **Know which numbers are sourced.** `fhr` geometry and materials are the
+   *published* gFHR benchmark (Kairos' non-proprietary KP-FHR surrogate): 19.55 wt%
+   **UCO** kernels, 0.22 TRISO packing, buoyancy-core pebble, 120/180/182/187/191 cm
+   radial build, SS316H (not Hastelloy-N), 100 at% B-10 B4C rods. Element counts come
+   from Hermes as licensed (NRC ML21272A383) where gFHR is silent. `hex` is
+   **representative, not a vendor spec**: Natrium's public docket fixes the fuel form
+   (U-10Zr, sodium-bonded, HT9 clad, peak enrichment <20 wt%), the B4C absorber and
+   the 9+4 control assembly counts — but not the pitch, pin lattices, ring layout or
+   enrichment split, which are literature values for a HALEU metal-fuel SFR.
 2. **Read `validation_<reactor>.csv`.** The reactivity bias and radial power-shape
    error there are what justify labelling the dataset with diffusion solutions.
 3. **Check `max_rel_std`** in the branch table — it bounds the Monte Carlo noise the

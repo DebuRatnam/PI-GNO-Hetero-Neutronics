@@ -42,9 +42,12 @@ from xs_common import MultiGroupXS, blend_xs, two_group as TwoGroupXS
 #   graphite_pebble   moderator-only pebble (no fission)
 #   control_element   B4C, 4 cylinders on the OUTER edge (insertion toggles XS)
 #   shutdown_element  B4C, 3 X-shapes in the INNER bed (insertion toggles XS)
-#   reflector         graphite reflector annulus
+#   reflector         graphite reflector annulus (60 cm, gFHR)
 #   coolant           FLiBe salt (interstitial + gaps)
-#   vessel            structural barrel/shield (parasitic capture, no fission)
+#   vessel            SS316H core barrel + FLiBe downcomer + SS316H reactor vessel,
+#                     homogenized into one ring (parasitic capture, no fission).
+#                     316H is the alloy Kairos qualified for the KP-FHR -- NOT
+#                     Hastelloy-N, whose Ni/Mo content captures very differently.
 MATERIAL_IDS: Dict[str, int] = {
     "fuel_pebble": 0,
     "graphite_pebble": 1,
@@ -87,15 +90,20 @@ LIBRARY: Dict[str, MultiGroupXS] = {
         Sigma_s12=0.027,
         nuSigma_f1=0.0, nuSigma_f2=0.0,
     ),
+    # Control/shutdown absorber is B4C enriched to 100 at% B-10 at 1.76 g/cm3 (the
+    # published gFHR rod), ~3.5x the B-10 atom density of natural full-density B4C.
+    # These elements are BLACK to thermal neutrons either way, so the homogenized
+    # removal is not the true macroscopic Sigma_a (~300 /cm) but the diffusion-
+    # equivalent value for a black cylinder, order 1/a with a = 2.6 cm rod radius.
     "control_element": TwoGroupXS(  # B4C cylinder (inserted): strong thermal absorber
         D1=1.00, D2=0.50,
-        Sigma_r1=0.020, Sigma_r2=0.400,
+        Sigma_r1=0.020, Sigma_r2=0.750,
         Sigma_s12=0.010,
         nuSigma_f1=0.0, nuSigma_f2=0.0,
     ),
     "shutdown_element": TwoGroupXS(  # B4C X-element (inserted): strongest absorber
         D1=0.95, D2=0.45,
-        Sigma_r1=0.020, Sigma_r2=0.550,
+        Sigma_r1=0.020, Sigma_r2=0.900,
         Sigma_s12=0.010,
         nuSigma_f1=0.0, nuSigma_f2=0.0,
     ),
@@ -125,9 +133,11 @@ LIBRARY: Dict[str, MultiGroupXS] = {
 # for a thermal group).
 CHI = (1.0, 0.0)
 
-# Transverse (axial) leakage buckling Bz^2 [1/cm^2]. Bz^2 = (pi / H_extrap)^2 with a
-# pebble-bed active height ~310 cm (gFHR/KP-FHR) plus extrapolation -> ~(pi/314)^2.
-# Smaller than the fast core: a taller core leaks less axially per unit height.
+# Transverse (axial) leakage buckling Bz^2 [1/cm^2]. Bz^2 = (pi / H_extrap)^2 with the
+# published gFHR active bed height 309.47 cm plus a short extrapolation distance ->
+# ~(pi/314)^2. Smaller than the fast core: a taller core leaks less axially per unit
+# height. (Axially the real core is reflected by graphite, so the true extrapolated
+# height is longer and this is a conservative upper bound on axial leakage.)
 AXIAL_BUCKLING_CM2 = 1.0e-4
 
 # Withdrawn control/shutdown element = FLiBe-filled channel (like coolant).

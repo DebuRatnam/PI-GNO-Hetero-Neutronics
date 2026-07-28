@@ -5,27 +5,35 @@ pebble-bed core and returns the SAME `CoreGeometry` struct, so operators.py /
 solver.py / power.py / graph_build.py run unchanged.
 
 Physical model (2D radial, frozen state; each pebble homogenized to one node),
-faithful to the real KP-FHR / generic-FHR (gFHR) design:
+following the published gFHR dimensions and the licensed Hermes control layout:
 
-  - ANNULAR core (radial build out from center): central graphite reflector column
-    -> inner unfueled pebble zone (graphite pebbles) -> FUELED pebble annulus (fuel
-    + a fraction of graphite moderator pebbles) -> outer unfueled pebble zone ->
-    outer graphite reflector -> steel vessel.
+  - CYLINDRICAL core (radial build out from center): a full-diameter pebble bed
+    (R_bed = 120 cm) -> 60 cm graphite side reflector -> SS316H barrel + FLiBe
+    downcomer + SS316H vessel, carried as one homogenized `vessel` ring.
+    There is NO central reflector column: gFHR/KP-FHR pebbles are buoyant and float
+    up through the whole bed cross section. (PebbleCoreConfig still exposes
+    R_center_refl / R_fuel_in / R_fuel_out so an inner column or an unfueled radial
+    band can be modelled; they default to off.)
   - Each pebble center is ONE node (4 cm dia). FLiBe `coolant` fills the bed gaps.
+    A fraction of the pebbles are moderator-only `graphite_pebble` (NRC Hermes
+    docket: a portion of the core pebbles are moderator pebbles).
   - 4 `control_element` rigid cylinders sit in the OUTER graphite reflector -- NRC
     KP-FHR: control elements insert into the side graphite reflector, NOT the bed.
     Each is a rigid 16-node circle inside a graphite-lined channel.
-  - 3 `shutdown_element` rigid X-shapes insert into the inner fueled bed (NRC), each
-    in a graphite-lined channel separating the B4C from the pebbles/FLiBe.
+  - 3 `shutdown_element` rigid X-shapes insert DIRECTLY into the packed bed (NRC),
+    with no graphite thimble -- direct pebble/FLiBe contact is what gives them their
+    shutdown worth.
   - Insertion toggles absorber vs FLiBe-follower XS (moves k_eff). The fuel:moderator
     pebble ratio is also a reactivity lever.
 
 Group 2 is a genuine THERMAL group (graphite + FLiBe moderation). N varies per
 sample. Cross sections come from materials_fhr (OpenMC-upgraded when cached).
 
-Sources: NRC KP-FHR Core Design & Analysis Methodology (ML21272A383); Kairos gFHR
-benchmark (Satvat et al. 2021). Exact Hermes control-element diameter is
-proprietary; r_ctrl is a documented representative value (gFHR 5.2 cm rod proxy).
+Sources: NRC KP-FHR Core Design & Analysis Methodology (ML21272A383) and the Hermes
+PSAR for the 4 reflector control + 3 in-bed shutdown element layout; the Kairos gFHR
+benchmark (Satvat et al., Nucl. Eng. Des. 384 (2021) 111461; INL Virtual Test Bed
+gFHR description) for every dimension. Exact Hermes control-element geometry is
+proprietary; r_ctrl (2.6 cm) and control_offset (7.9 cm) are the published gFHR rod.
 """
 
 from __future__ import annotations
@@ -105,9 +113,12 @@ def _structure_centers(cfg: PebbleCoreConfig
 
 def _rsa_pebbles(cfg: PebbleCoreConfig, shut: np.ndarray,
                  rng: np.random.Generator) -> np.ndarray:
-    """RSA pack non-overlapping pebble-center disks in the ANNULAR bed
-    (R_center_refl .. R_bed), avoiding the shutdown-channel footprints."""
-    r_in = cfg.R_center_refl + cfg.r_peb
+    """RSA pack non-overlapping pebble-center disks across the bed
+    (R_center_refl .. R_bed), avoiding the shutdown-channel footprints.
+
+    R_center_refl is 0 on the gFHR/KP-FHR build, so the bed is a full disk; the
+    annular form is kept only for cores that do configure a central column."""
+    r_in = cfg.R_center_refl + cfg.r_peb if cfg.R_center_refl > 0.0 else 0.0
     r_out = cfg.R_bed - cfg.r_peb
     min_sep2 = (2.0 * cfg.r_peb) ** 2
     area = np.pi * (r_out ** 2 - r_in ** 2)
@@ -211,29 +222,40 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         for p in _cross_fill_nodes(sc, cfg.x_arm_len, cfg.x_arm_w, np.pi / 4.0, estep):
             coords.append(p); mats.append(shut_id)
 
-    # --- background grid for the SOLID regions: central reflector, outer reflector,
-    # steel vessel. The pebble bed is handled separately (target-count coolant below).
-    step = cfg.r_peb * cfg.coolant_step_frac
-    g = np.arange(-cfg.R_vessel, cfg.R_vessel + step, step)
+    # --- background grid for the SOLID regions outside the bed. Two resolutions:
+    # the 60 cm graphite reflector has no sub-pebble structure and is meshed coarse
+    # (structure_step_frac), while the barrel / downcomer / vessel stack is only a few
+    # cm per layer and keeps the fine (coolant) step so each layer is still resolved.
+    # The pebble bed itself is handled separately (target-count coolant below).
+    fine_step = cfg.r_peb * cfg.coolant_step_frac
+    refl_step = cfg.r_peb * cfg.structure_step_frac
     ctree = cKDTree(ctrl) if len(ctrl) else None
-    for gx in g:
-        for gy in g:
-            x = gx + (rng.random() - 0.5) * step * 0.35
-            y = gy + (rng.random() - 0.5) * step * 0.35
-            r = float(np.hypot(x, y))
-            if r > cfg.R_vessel:
-                continue
-            p = (x, y)
-            if r > cfg.R_refl:
-                coords.append(p); mats.append(vess_id)       # steel vessel shell
-            elif r > cfg.R_bed:
-                # outer graphite reflector; control elements own their channels
-                if ctree is not None and ctree.query(p)[0] < ctrl_wall_r + 0.5 * step:
+
+    def _fill(r_lo: float, r_hi: float, step: float, mat_id: int,
+              avoid_control: bool = False) -> None:
+        """Jittered square grid clipped to the annulus r_lo < r <= r_hi."""
+        if r_hi <= r_lo:
+            return
+        g = np.arange(-r_hi, r_hi + step, step)
+        for gx in g:
+            for gy in g:
+                x = gx + (rng.random() - 0.5) * step * 0.35
+                y = gy + (rng.random() - 0.5) * step * 0.35
+                r = float(np.hypot(x, y))
+                if not (r_lo < r <= r_hi):
                     continue
-                coords.append(p); mats.append(refl_id)
-            elif r <= cfg.R_center_refl:
-                coords.append(p); mats.append(refl_id)       # central reflector column
-            # (R_center_refl < r < R_bed) is the bed -> coolant placed below
+                p = (x, y)
+                if avoid_control and ctree is not None and (
+                        ctree.query(p)[0] < ctrl_wall_r + 0.5 * step):
+                    continue                    # control elements own their channels
+                coords.append(p); mats.append(mat_id)
+
+    # central graphite column, when one is configured (gFHR/KP-FHR: none)
+    _fill(0.0, cfg.R_center_refl, fine_step, refl_id)
+    # outer graphite reflector (holds the control channels)
+    _fill(cfg.R_bed, cfg.R_refl, refl_step, refl_id, avoid_control=True)
+    # barrel + downcomer + vessel, homogenized into one `vessel` ring
+    _fill(cfg.R_refl, cfg.R_vessel, fine_step, vess_id)
 
     # --- interstitial FLiBe: place coolant nodes to hit the real pebble:FLiBe VOLUME
     # ratio (~60:40). coolant_per_pebble=1.0 is calibrated to ~60% pebble volume
@@ -372,7 +394,10 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         "mean_shutdown_depth": float(shut_depths.mean()) if len(shut_depths) else 0.0,
         "R_center_refl": cfg.R_center_refl, "R_fuel_in": cfg.R_fuel_in,
         "R_fuel_out": cfg.R_fuel_out, "R_bed": cfg.R_bed,
-        "R_refl": cfg.R_refl, "R_vessel": cfg.R_vessel,
+        "R_refl": cfg.R_refl, "R_barrel": cfg.R_barrel,
+        "R_downcomer": cfg.R_downcomer, "R_vessel": cfg.R_vessel,
+        "core_shape": ("cylindrical bed (no central reflector column)"
+                       if cfg.R_center_refl <= 0.0 else "annular bed"),
         "upscatter_included": True,
         "upscatter_note": "thermal->fast Ss21, operator-level (in A), not in node XS row",
     }

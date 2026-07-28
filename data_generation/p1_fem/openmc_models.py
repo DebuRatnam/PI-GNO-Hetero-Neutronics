@@ -35,12 +35,24 @@ convention: a short axial slab with REFLECTIVE top/bottom (axially infinite, i.e
 zero axial leakage) and a vacuum radial boundary. Axial leakage must therefore NOT
 be double counted -- it enters once, via Bz^2 in operators.assemble_AF.
 
-Compositions are documented public/literature-level starting points (HALEU U-10Zr
-metal fuel, TRISO UO2, graphite, B4C, FLiBe, sodium, HT9, Hastelloy-N). They are NOT
-a validated vendor core specification, and the exact Hermes control-element geometry
-is proprietary; `r_ctrl` follows the documented gFHR 5.2 cm rod proxy already used by
-PebbleCoreConfig. Review these against your reactor spec before treating the tallied
-constants as benchmark grade.
+Provenance of the numbers
+-------------------------
+`fhr` follows the PUBLISHED gFHR benchmark -- Kairos Power's own non-proprietary
+KP-FHR surrogate (Satvat et al., Nucl. Eng. Des. 384 (2021) 111461; INL Virtual Test
+Bed gFHR description; Duchnowski et al. 2023 Table 1): 120 cm bed radius, 60 cm
+graphite reflector, SS316H barrel / FLiBe downcomer / SS316H vessel, 4 cm pebbles
+with a 1.38 cm low-density buoyancy core and an annular TRISO-bearing fuel shell,
+19.55 wt% UCO kernels at 0.22 TRISO packing, 0.60 bed packing, 100 at% B-10 B4C
+control absorber at 2.6 cm radius, 7.9 cm out from the bed edge. The element COUNTS
+(4 reflector control + 3 in-bed shutdown) are Hermes as licensed (NRC ML21272A383),
+not gFHR's 10 reflector rods.
+
+`hex` is REPRESENTATIVE, not a vendor spec. Natrium's public docket fixes the fuel
+form (U-10wt%Zr, sodium-bonded, HT9 clad, peak enrichment < 20 wt%), the B4C
+absorber, and the 9 primary + 4 secondary control assembly counts -- but not the
+pitch, the pin lattices, the ring layout or the enrichment split. Those are literature
+values for a HALEU metal-fuel SFR of this class. Review them against your own spec
+before treating the tallied constants as benchmark grade.
 
 openmc is imported lazily inside the builders so this module (and everything that
 imports it) works without OpenMC installed.
@@ -93,18 +105,32 @@ HEX_R_FUEL_FRAC = 0.32        # fuel slug radius / pin pitch  -> VF ~ 0.37
 HEX_R_CLAD_IN_FRAC = 0.36     # sodium bond gap outer radius / pitch
 HEX_R_CLAD_OUT_FRAC = 0.40    # HT9 clad outer radius / pitch
 
-# fhr / KP-FHR pebble + TRISO. gFHR-representative.
-PEBBLE_FUEL_ZONE_R = 1.40     # [cm] TRISO-bearing zone radius inside the pebble
+# fhr / KP-FHR pebble + TRISO. These are the PUBLISHED gFHR benchmark values (Kairos
+# Power's non-proprietary KP-FHR surrogate; Satvat et al., Nucl. Eng. Des. 384 (2021)
+# 111461; INL Virtual Test Bed gFHR reactor description; Duchnowski et al. 2023
+# Table 1). The pebble is NOT a solid fuel sphere: it is a LOW-DENSITY graphite core
+# for buoyancy in FLiBe (the pebbles float up through the bed), a TRISO-bearing fuel
+# SHELL around it, and a fuel-free outer graphite shell.
+PEBBLE_CORE_R = 1.38          # [cm] low-density graphite buoyancy core
+PEBBLE_FUEL_ZONE_R = 1.80     # [cm] outer radius of the TRISO-bearing fuel shell
 PEBBLE_SHELL_R = 2.00         # [cm] pebble outer radius (4 cm dia)
-TRISO_PACKING_FRACTION = 0.40 # TRISO volume fraction in the fuel zone
+PEBBLE_CORE_DENSITY = 1.41    # [g/cm3] buoyancy core graphite
+PEBBLE_MATRIX_DENSITY = 1.74  # [g/cm3] fuel-layer graphite matrix
+PEBBLE_SHELL_DENSITY = 1.74   # [g/cm3] outer fuel-free graphite shell
+TRISO_PACKING_FRACTION = 0.22 # TRISO volume fraction in the fuel SHELL
 TRISO_R = {                   # [cm] cumulative TRISO layer radii
-    "kernel": 0.02125,        # 425 um dia UO2 kernel
-    "buffer": 0.03125,        # +100 um porous carbon
-    "ipyc":   0.03525,        # +40 um inner pyrolytic carbon
-    "sic":    0.03875,        # +35 um SiC
-    "opyc":   0.04275,        # +40 um outer pyrolytic carbon
+    "kernel": 0.02125,        # 425 um dia UCO (UC0.5O1.5) kernel, 10.5 g/cm3
+    "buffer": 0.03125,        # +100 um porous carbon, 1.05 g/cm3
+    "ipyc":   0.03525,        # +40 um inner pyrolytic carbon, 1.90 g/cm3
+    "sic":    0.03875,        # +35 um SiC, 3.18 g/cm3
+    "opyc":   0.04275,        # +40 um outer pyrolytic carbon, 1.90 g/cm3
 }
 BED_PACKING_FRACTION = 0.60   # 3D random sphere packing in the pebble bed
+FHR_ENRICHMENT_WT_PCT = 19.55 # gFHR UCO enrichment (HALEU; Hermes quotes 19.74)
+REFLECTOR_GRAPHITE_DENSITY = 1.74   # [g/cm3] gFHR side/plenum reflector graphite
+SS316H_DENSITY = 8.0          # [g/cm3] gFHR core barrel + reactor vessel
+B4C_CONTROL_DENSITY = 1.76    # [g/cm3] gFHR control-rod B4C
+B4C_CONTROL_B10_ENRICH = 1.0  # gFHR control rods are 100 at% B-10
 
 # Pebble packings are expensive to generate and identical across branch cases, so
 # they are cached here (see _packed_bed). Safe to delete; it only costs time.
@@ -187,7 +213,7 @@ def _add_haleu(openmc, m, wt_pct_u235: float, u_weight_fraction: float = 1.0) ->
 
     `Material.add_element("U", enrichment=...)` assumes a constant U234/U235 mass
     ratio of 0.008, which OpenMC itself warns is only valid below ~5 wt%. Both cores
-    here run at 14-19.75 wt%, so the isotopics are set explicitly instead.
+    here run at 15.5-19.75 wt%, so the isotopics are set explicitly instead.
 
     U-234 follows the standard enrichment-cascade correlation
     w(U234) = 0.0089 * w(U235) (ASTM C996 range for enriched product), and U-236 is
@@ -234,26 +260,41 @@ def _u_metal_fuel(openmc, name: str, enrichment: float, T: float,
     return m
 
 
-def _uo2_weight_fractions(wt_pct_u235: float) -> Tuple[float, float]:
-    """(w_U, w_O) mass fractions of stoichiometric UO2 at a given enrichment."""
+def _haleu_atom_fractions(wt_pct_u235: float) -> Tuple[float, float, float]:
+    """(a234, a235, a238) ATOM fractions of the uranium at a given wt% U-235.
+
+    Same U-234 cascade correlation as _add_haleu; returned normalized to sum to 1 so
+    the caller can use them directly in a stoichiometric ('ao') compound.
+    """
     w235 = wt_pct_u235 / 100.0
     w234 = 0.0089 * w235
     w238 = 1.0 - w235 - w234
-    m_u = 1.0 / (w234 / 234.0409 + w235 / 235.0439 + w238 / 238.0508)
-    m_o2 = 2 * 15.9994
-    return m_u / (m_u + m_o2), m_o2 / (m_u + m_o2)
+    n = {"U234": w234 / 234.0409, "U235": w235 / 235.0439, "U238": w238 / 238.0508}
+    tot = sum(n.values())
+    return n["U234"] / tot, n["U235"] / tot, n["U238"] / tot
 
 
-def _uo2_kernel(openmc, name: str, enrichment: float, T: float,
+def _uco_kernel(openmc, name: str, enrichment: float, T: float,
                 composition: Optional[Dict[str, float]] = None):
-    """TRISO UO2 kernel. `composition` from the depletion table overrides fresh."""
+    """TRISO UCO kernel, UC(0.5)O(1.5) at 10.5 g/cm3.
+
+    The gFHR/KP-FHR kernel is uranium OXYCARBIDE, not UO2 -- the specification is the
+    AGR-2 oxycarbide form with the carbon content at the upper limit of the AGR
+    testing envelope. That excess carbon is what getters the CO released by fission
+    and buffers the kernel-migration/SiC-corrosion failure modes; it also puts extra
+    moderating carbon inside the kernel, which UO2 does not have. `composition` from
+    the depletion table overrides the fresh isotopics.
+    """
     m = openmc.Material(name=name)
     if composition:
         _apply_composition(openmc, m, composition)
     else:
-        w_u, w_o = _uo2_weight_fractions(enrichment)
-        _add_haleu(openmc, m, enrichment, u_weight_fraction=w_u)
-        m.add_element("O", w_o, "wo")
+        a234, a235, a238 = _haleu_atom_fractions(enrichment)
+        m.add_nuclide("U234", a234)          # atom fractions, U total = 1
+        m.add_nuclide("U235", a235)
+        m.add_nuclide("U238", a238)
+        m.add_element("C", 0.5)              # UC(0.5)O(1.5)
+        m.add_element("O", 1.5)
         m.set_density("g/cm3", 10.5)
     m.temperature = T
     return m
@@ -268,9 +309,25 @@ def _graphite(openmc, name: str, density: float, T: float):
     return m
 
 
-def _b4c(openmc, name: str, T: float, density: float = 2.52):
+def _b4c(openmc, name: str, T: float, density: float = 2.52,
+         b10_enrichment: Optional[float] = None):
+    """B4C absorber. `b10_enrichment` is the B-10 ATOM fraction of the boron; None
+    keeps natural boron (19.9 at% B-10).
+
+    The gFHR control rods are specified as 100% B-10 at 1.76 g/cm3 (a porous /
+    matrix-bound absorber, not full-density B4C), which is a very different absorber
+    from natural-boron full-density B4C: ~5x the B-10 atom density per boron atom but
+    ~0.7x the bulk density. Natrium's control assemblies are docketed only as "boron
+    carbide"; enrichment is not public, so those stay natural.
+    """
     m = openmc.Material(name=name)
-    m.add_element("B", 4.0)
+    if b10_enrichment is None:
+        m.add_element("B", 4.0)
+    else:
+        f = float(b10_enrichment)
+        m.add_nuclide("B10", 4.0 * f)
+        if f < 1.0:
+            m.add_nuclide("B11", 4.0 * (1.0 - f))
     m.add_element("C", 1.0)
     m.set_density("g/cm3", density)
     m.temperature = T
@@ -315,22 +372,15 @@ def _ht9(openmc, name: str, T: float, density: float = 7.8):
     return m
 
 
-def _hastelloy_n(openmc, name: str, T: float):
-    """Hastelloy-N: the reference FLiBe-compatible Ni-Mo-Cr vessel alloy."""
-    m = openmc.Material(name=name)
-    m.add_element("Ni", 0.71)
-    m.add_element("Mo", 0.16)
-    m.add_element("Cr", 0.07)
-    m.add_element("Fe", 0.05)
-    m.add_element("Mn", 0.008)
-    m.add_element("Si", 0.002)
-    m.set_density("g/cm3", 8.86)
-    m.temperature = T
-    return m
+def _ss316(openmc, name: str, T: float, density: float = 7.99):
+    """Type 316 / 316H stainless steel.
 
-
-def _ss316(openmc, name: str, T: float):
-    """Type 316 stainless (Natrium radial reflector / shield structure)."""
+    Used for the Natrium radial reflector and shield structure, and -- as 316H at the
+    gFHR-specified 8.0 g/cm3 -- for the KP-FHR core barrel and reactor vessel. 316H is
+    the structural alloy Kairos qualified for the KP-FHR (ASME code case); the older
+    FLiBe-loop reference alloy Hastelloy-N is NOT what this design uses, and its Ni/Mo
+    content would give a materially different parasitic capture in the vessel ring.
+    """
     m = openmc.Material(name=name)
     m.add_element("Fe", 0.655)
     m.add_element("Cr", 0.17)
@@ -338,7 +388,7 @@ def _ss316(openmc, name: str, T: float):
     m.add_element("Mo", 0.025)
     m.add_element("Mn", 0.02)
     m.add_element("Si", 0.01)
-    m.set_density("g/cm3", 7.99)
+    m.set_density("g/cm3", density)
     m.temperature = T
     return m
 
@@ -513,12 +563,16 @@ def natrium_model(hx: HexCoreConfig, state: BranchState, *,
         return _hex_assembly_universe(openmc, fem_name, center_mat, bond, clad, na,
                                       pitch, rings, absorber=absorber)
 
+    # SFR radial enrichment zoning: the OUTER zone is the HIGHER-enriched one, to
+    # offset the hard leakage at the core periphery and flatten radial power. Natrium
+    # is docketed only as "enrichment varies by core position, peak < 20 wt% U-235";
+    # 15.5 / 19.75 is a representative split at that ceiling.
     lat_inner = make_assembly(
-        "fuel_inner", _u_metal_fuel(openmc, "fuel_inner", 19.75, T,
+        "fuel_inner", _u_metal_fuel(openmc, "fuel_inner", 15.50, T,
                                     fc.get("fuel_inner")),
         pitch_f, HEX_PIN_RINGS_FUEL, absorber=False)
     lat_outer = make_assembly(
-        "fuel_outer", _u_metal_fuel(openmc, "fuel_outer", 14.00, T,
+        "fuel_outer", _u_metal_fuel(openmc, "fuel_outer", 19.75, T,
                                     fc.get("fuel_outer")),
         pitch_f, HEX_PIN_RINGS_FUEL, absorber=False)
 
@@ -620,26 +674,36 @@ def _triso_universe(openmc, kernel, buffer_, ipyc, sic, opyc):
     ])
 
 
-def _fuel_pebble_universe(openmc, triso_u, matrix, shell, outside, seed: int = 1):
-    """One fuel pebble: an explicit TRISO packing in a graphite matrix core, wrapped
-    in a graphite shell. Built ONCE and shared by every fuel pebble in the core."""
+def _fuel_pebble_universe(openmc, triso_u, core_graphite, matrix, shell, outside,
+                          seed: int = 1):
+    """One gFHR/KP-FHR fuel pebble, built ONCE and shared by every fuel pebble.
+
+    Three concentric regions (see PEBBLE_* constants): a low-density graphite
+    BUOYANCY CORE (r < 1.38 cm), an explicit TRISO packing in a graphite matrix
+    SHELL (1.38 - 1.80 cm), and a fuel-free outer graphite shell (1.80 - 2.00 cm).
+    Packing the TRISO into the annular shell rather than the whole interior is not
+    cosmetic: it moves every kernel outward, changing the self-shielding the fuel
+    sees and the moderator path a thermal neutron takes to reach it.
+    """
+    core_s = openmc.Sphere(r=PEBBLE_CORE_R)
     fuel_zone = openmc.Sphere(r=PEBBLE_FUEL_ZONE_R)
     shell_s = openmc.Sphere(r=PEBBLE_SHELL_R)
 
     centers = openmc.model.pack_spheres(
-        radius=TRISO_R["opyc"], region=-fuel_zone,
+        radius=TRISO_R["opyc"], region=+core_s & -fuel_zone,
         pf=TRISO_PACKING_FRACTION, seed=seed)
     trisos = [openmc.model.TRISO(TRISO_R["opyc"], triso_u, c) for c in centers]
 
     # bin the particles into a background lattice so tracking stays fast
     ll, ur = np.array([-PEBBLE_FUEL_ZONE_R] * 3), np.array([PEBBLE_FUEL_ZONE_R] * 3)
-    shape = (8, 8, 8)
+    shape = (10, 10, 10)
     pitch = (ur - ll) / np.array(shape)
     lattice = openmc.model.create_triso_lattice(
         trisos, ll, pitch, shape, matrix)
 
     return openmc.Universe(cells=[
-        openmc.Cell(fill=lattice, region=-fuel_zone),
+        openmc.Cell(fill=core_graphite, region=-core_s),
+        openmc.Cell(fill=lattice, region=+core_s & -fuel_zone),
         openmc.Cell(fill=shell, region=+fuel_zone & -shell_s),
         openmc.Cell(fill=outside, region=+shell_s),
     ]), len(trisos)
@@ -718,15 +782,21 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
               # reflective, so its height is a free parameter.
               axial_cm: float = 16.0,
               bed_packing_fraction: float = BED_PACKING_FRACTION,
-              enrichment: float = 19.75,
+              enrichment: float = FHR_ENRICHMENT_WT_PCT,
               fuel_composition: Optional[Dict[str, float]] = None,
               seed: int = 1) -> CoreModel:
     """Full-core KP-FHR pebble-bed model matching geometry_pebble.make_pebble_core.
 
-    Same annular build (central reflector column -> pebble bed -> outer graphite
-    reflector holding 4 control channels -> vessel), same shutdown X-elements in the
-    inner bed, same radii. Pebbles are explicit spheres on a random (RSA) packing;
-    fuel pebbles carry an explicit TRISO lattice. Radial vacuum + axially reflective.
+    Same gFHR radial build (full-diameter pebble bed -> 60 cm graphite side reflector
+    holding the control channels -> SS316H barrel -> FLiBe downcomer -> SS316H
+    vessel), same shutdown X-elements inserted directly into the bed, same radii.
+    Pebbles are explicit spheres on a random (RSA) packing; fuel pebbles carry an
+    explicit TRISO lattice in an annular fuel shell. Radial vacuum + axially
+    reflective.
+
+    NOTE ON COST: at the gFHR bed radius (120 cm) a 16 cm slab holds ~13k pebbles,
+    ~4x the old reduced-radius dev core. The packing is cached (see _packed_bed), but
+    the first build of a new radius is the slow step.
 
     `fuel_composition` = {nuclide: atom_fraction} for the TRISO kernel at
     state.burnup_mwd_kg (depletion table); None = fresh.
@@ -738,34 +808,43 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
     gpf = pb.graphite_pebble_frac if graphite_pebble_frac is None else graphite_pebble_frac
     rod_in = state.rod == "in"
 
-    # materials
+    # materials (densities are the published gFHR values; see the PEBBLE_* constants)
     flibe = _flibe(openmc, "coolant", T)
-    matrix = _graphite(openmc, "pebble_matrix", 1.60, T)
-    shell = _graphite(openmc, "pebble_shell", 1.75, T)
-    gpeb = _graphite(openmc, "graphite_pebble", 1.75, T)
-    refl = _graphite(openmc, "reflector", 1.80, T)
-    vessel = _hastelloy_n(openmc, "vessel", T)
-    kernel = _uo2_kernel(openmc, "fuel_pebble", enrichment, T, fuel_composition)
-    buffer_ = _graphite(openmc, "triso_buffer", 1.00, T)
+    peb_core = _graphite(openmc, "pebble_core", PEBBLE_CORE_DENSITY, T)
+    matrix = _graphite(openmc, "pebble_matrix", PEBBLE_MATRIX_DENSITY, T)
+    shell = _graphite(openmc, "pebble_shell", PEBBLE_SHELL_DENSITY, T)
+    gpeb = _graphite(openmc, "graphite_pebble", PEBBLE_SHELL_DENSITY, T)
+    refl = _graphite(openmc, "reflector", REFLECTOR_GRAPHITE_DENSITY, T)
+    # barrel / downcomer / vessel are resolved separately here and homogenized back
+    # into the single FEM `vessel` ring below.
+    barrel = _ss316(openmc, "barrel", T, density=SS316H_DENSITY)
+    downcomer = _flibe(openmc, "downcomer", T)
+    vessel = _ss316(openmc, "vessel", T, density=SS316H_DENSITY)
+    kernel = _uco_kernel(openmc, "fuel_pebble", enrichment, T, fuel_composition)
+    buffer_ = _graphite(openmc, "triso_buffer", 1.05, T)
     ipyc = _graphite(openmc, "triso_ipyc", 1.90, T)
     opyc = _graphite(openmc, "triso_opyc", 1.90, T)
     sic = openmc.Material(name="triso_sic")
     sic.add_element("Si", 1.0)
     sic.add_element("C", 1.0)
-    sic.set_density("g/cm3", 3.20)
+    sic.set_density("g/cm3", 3.18)
     sic.temperature = T
 
-    control = _b4c(openmc, "control_element", T) if rod_in else None
-    shutdown = _b4c(openmc, "shutdown_element", T) if rod_in else None
+    # gFHR control/shutdown absorber: 100 at% B-10 B4C at 1.76 g/cm3.
+    control = (_b4c(openmc, "control_element", T, density=B4C_CONTROL_DENSITY,
+                    b10_enrichment=B4C_CONTROL_B10_ENRICH) if rod_in else None)
+    shutdown = (_b4c(openmc, "shutdown_element", T, density=B4C_CONTROL_DENSITY,
+                     b10_enrichment=B4C_CONTROL_B10_ENRICH) if rod_in else None)
     follower = _flibe(openmc, "control_follower", T) if not rod_in else None
 
-    mats = [flibe, matrix, shell, gpeb, refl, vessel, kernel, buffer_, ipyc, opyc, sic]
+    mats = [flibe, peb_core, matrix, shell, gpeb, refl, barrel, downcomer, vessel,
+            kernel, buffer_, ipyc, opyc, sic]
     mats += [m for m in (control, shutdown, follower) if m is not None]
 
     # pebble universes (defined once, instantiated per pebble)
     triso_u = _triso_universe(openmc, kernel, buffer_, ipyc, sic, opyc)
-    fuel_peb_u, n_triso = _fuel_pebble_universe(openmc, triso_u, matrix, shell,
-                                                flibe, seed=seed)
+    fuel_peb_u, n_triso = _fuel_pebble_universe(openmc, triso_u, peb_core, matrix,
+                                                shell, flibe, seed=seed)
     graph_peb_u = _graphite_pebble_universe(openmc, gpeb, flibe)
 
     # --- radial build --------------------------------------------------------
@@ -773,9 +852,14 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
     z1 = openmc.ZPlane(z0=+axial_cm / 2.0, boundary_type="reflective")
     axial = +z0 & -z1
 
-    c_center = openmc.ZCylinder(r=pb.R_center_refl)
+    # R_center_refl is 0 for gFHR/KP-FHR (full-diameter bed, no central column); the
+    # surface is only created when a central column is actually configured.
+    c_center = (openmc.ZCylinder(r=pb.R_center_refl) if pb.R_center_refl > 0.0
+                else None)
     c_bed = openmc.ZCylinder(r=pb.R_bed)
     c_refl = openmc.ZCylinder(r=pb.R_refl)
+    c_barrel = openmc.ZCylinder(r=pb.R_barrel)
+    c_down = openmc.ZCylinder(r=pb.R_downcomer)
     c_vessel = openmc.ZCylinder(r=pb.R_vessel, boundary_type="vacuum")
 
     ctrl_centers, shut_centers = _structure_centers(pb)
@@ -797,17 +881,20 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
     ctrl_cyls = [openmc.ZCylinder(x0=float(c[0]), y0=float(c[1]), r=pb.r_ctrl)
                  for c in ctrl_centers]
 
-    # pebble bed region: annulus minus the shutdown footprints
-    bed_region = +c_center & -c_bed & axial
+    # pebble bed region: the cylinder (annulus if a central column is configured)
+    # minus the shutdown footprints
+    bed_region = -c_bed & axial
+    if c_center is not None:
+        bed_region = bed_region & +c_center
     for reg in shut_regions:
         bed_region = bed_region & ~reg
 
     # openmc.model.pack_spheres only accepts a simple container (cylinder, sphere,
     # spherical shell, rectangular prism), so pack the full cylinder and then discard
-    # the centres that fall in the central reflector column or a shutdown channel.
-    # Local packing fraction in the annulus is unaffected by the discard. The
-    # exclusion tests mirror geometry_pebble._rsa_pebbles exactly (same inflated arm
-    # dimensions, same pi/4 rotation) so both models pack against the same obstacles.
+    # the centres that fall in a central reflector column (if any) or a shutdown
+    # channel. Local packing fraction is unaffected by the discard. The exclusion
+    # tests mirror geometry_pebble._rsa_pebbles exactly (same inflated arm dimensions,
+    # same pi/4 rotation) so both models pack against the same obstacles.
     from geometry_pebble import _in_cross
 
     centers = _packed_bed(openmc, -c_bed & axial, pb.R_bed, axial_cm,
@@ -816,7 +903,8 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
     sh_w = pb.x_arm_w + 2 * PEBBLE_SHELL_R
     keep = []
     for c in centers:
-        if np.hypot(c[0], c[1]) < pb.R_center_refl + PEBBLE_SHELL_R:
+        if pb.R_center_refl > 0.0 and (
+                np.hypot(c[0], c[1]) < pb.R_center_refl + PEBBLE_SHELL_R):
             continue                                    # central graphite column
         if any(_in_cross((c[0], c[1]), sc, sh_len, sh_w, np.pi / 4.0)
                for sc in shut_centers):
@@ -828,7 +916,8 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
 
     rng = np.random.default_rng(seed)
     is_graphite = rng.random(len(centers)) < gpf
-    # unfueled inner/outer bands are graphite-only (annular core, gFHR build)
+    # any configured unfueled radial band is graphite-only. gFHR/KP-FHR has none
+    # (R_fuel_in=0, R_fuel_out=R_bed), so this is a no-op on the default core.
     rad = np.hypot(centers[:, 0], centers[:, 1])
     is_graphite |= (rad < pb.R_fuel_in) | (rad > pb.R_fuel_out)
 
@@ -841,15 +930,17 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
     pitch = (ur - ll) / np.array(shape)
     bed_lattice = openmc.model.create_triso_lattice(pebbles, ll, pitch, shape, flibe)
 
-    cells = [
-        openmc.Cell(fill=refl, region=-c_center & axial, name="center_reflector"),
-        openmc.Cell(fill=bed_lattice, region=bed_region, name="pebble_bed"),
-    ]
+    cells = [openmc.Cell(fill=bed_lattice, region=bed_region, name="pebble_bed")]
+    if c_center is not None:
+        cells.append(openmc.Cell(fill=refl, region=-c_center & axial,
+                                 name="center_reflector"))
     for i, reg in enumerate(shut_regions):
-        # X blade (B4C or FLiBe follower) inside the bed annulus
+        # X blade (B4C or FLiBe follower) inserted directly into the bed
+        blade = reg & -c_bed & axial
+        if c_center is not None:
+            blade = blade & +c_center
         cells.append(openmc.Cell(fill=shutdown if rod_in else follower,
-                                 region=reg & +c_center & -c_bed & axial,
-                                 name=f"shutdown_{i}"))
+                                 region=blade, name=f"shutdown_{i}"))
 
     refl_region = +c_bed & -c_refl & axial
     for cyl in ctrl_cyls:
@@ -857,28 +948,42 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
                                  region=-cyl & refl_region, name="control"))
         refl_region = refl_region & +cyl
     cells.append(openmc.Cell(fill=refl, region=refl_region, name="outer_reflector"))
-    cells.append(openmc.Cell(fill=vessel, region=+c_refl & -c_vessel & axial,
+    # barrel / downcomer / vessel: three thin rings, resolved separately so each is
+    # collapsed against its own spectrum, then homogenized into the FEM `vessel` ring.
+    cells.append(openmc.Cell(fill=barrel, region=+c_refl & -c_barrel & axial,
+                             name="barrel"))
+    cells.append(openmc.Cell(fill=downcomer, region=+c_barrel & -c_down & axial,
+                             name="downcomer"))
+    cells.append(openmc.Cell(fill=vessel, region=+c_down & -c_vessel & axial,
                              name="vessel"))
 
     geometry = openmc.Geometry(openmc.Universe(cells=cells))
 
     # A FEM `fuel_pebble` node is the WHOLE pebble, but transport resolves it into
-    # kernel / buffer / IPyC / SiC / OPyC / matrix / shell. Each constituent is its
-    # own tally domain (that is what makes the self-shielding real) and xs_openmc
-    # homogenizes them back with the volumes from fuel_pebble_volumes().
+    # kernel / buffer / IPyC / SiC / OPyC / buoyancy core / matrix / shell. Each
+    # constituent is its own tally domain (that is what makes the self-shielding real)
+    # and xs_openmc homogenizes them back with fuel_pebble_volumes(). The FEM `vessel`
+    # node is likewise the whole barrel+downcomer+vessel stack.
     domains = {
         "fuel_pebble": kernel, "graphite_pebble": gpeb, "reflector": refl,
-        "coolant": flibe, "vessel": vessel,
-        "_pebble_matrix": matrix, "_pebble_shell": shell,
+        "coolant": flibe,
+        "_pebble_core": peb_core, "_pebble_matrix": matrix, "_pebble_shell": shell,
         "_triso_buffer": buffer_, "_triso_ipyc": ipyc, "_triso_sic": sic,
         "_triso_opyc": opyc,
+        "_barrel": barrel, "_downcomer": downcomer, "_vessel": vessel,
     }
+    # per-unit-height annulus areas [cm^3/cm] for the vessel-ring homogenization
+    ring = lambda r_out, r_in: float(np.pi * (r_out ** 2 - r_in ** 2))
     homogenize: Dict[str, Dict[str, float]] = {
         "fuel_pebble": fuel_pebble_volumes(),
         "graphite_pebble": {"graphite_pebble": 1.0},
         "reflector": {"reflector": 1.0},
         "coolant": {"coolant": 1.0},
-        "vessel": {"vessel": 1.0},
+        "vessel": {
+            "_barrel": ring(pb.R_barrel, pb.R_refl),
+            "_downcomer": ring(pb.R_downcomer, pb.R_barrel),
+            "_vessel": ring(pb.R_vessel, pb.R_downcomer),
+        },
     }
     if rod_in:
         domains["control_element"] = control
@@ -896,8 +1001,20 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
         "n_triso_per_pebble": int(n_triso),
         "bed_packing_fraction": float(bed_packing_fraction),
         "triso_packing_fraction": TRISO_PACKING_FRACTION,
+        "enrichment_wt_pct": float(enrichment),
+        "kernel_form": "UC(0.5)O(1.5) oxycarbide, 10.5 g/cm3",
+        "pebble_build_cm": [PEBBLE_CORE_R, PEBBLE_FUEL_ZONE_R, PEBBLE_SHELL_R],
+        "radial_build_cm": {"bed": pb.R_bed, "reflector": pb.R_refl,
+                            "barrel": pb.R_barrel, "downcomer": pb.R_downcomer,
+                            "vessel": pb.R_vessel},
+        "control_absorber": (f"B4C, {100.0 * B4C_CONTROL_B10_ENRICH:g} at% B-10, "
+                             f"{B4C_CONTROL_DENSITY} g/cm3"),
         "axial_cm": float(axial_cm),
-        "double_heterogeneity": "explicit TRISO lattice inside explicit pebbles",
+        "geometry_source": ("gFHR benchmark (Satvat et al. 2021 / INL VTB) for "
+                            "dimensions and materials; Hermes (NRC ML21272A383) for "
+                            "the 4 reflector control + 3 in-bed shutdown element count"),
+        "double_heterogeneity": ("explicit TRISO lattice in an annular fuel shell "
+                                 "inside explicit pebbles"),
     })
 
 
@@ -906,17 +1023,19 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
 def fuel_pebble_volumes() -> Dict[str, float]:
     r = TRISO_R
     v = lambda rad: 4.0 / 3.0 * np.pi * rad ** 3
-    v_zone = v(PEBBLE_FUEL_ZONE_R)
+    v_core = v(PEBBLE_CORE_R)                       # low-density buoyancy core
+    v_zone = v(PEBBLE_FUEL_ZONE_R) - v_core         # TRISO-bearing shell
     v_triso = v(r["opyc"])
     n = TRISO_PACKING_FRACTION * v_zone / v_triso
     return {
-        "fuel_pebble": n * v(r["kernel"]),                       # UO2 kernels
+        "fuel_pebble": n * v(r["kernel"]),                       # UCO kernels
         "_triso_buffer": n * (v(r["buffer"]) - v(r["kernel"])),
         "_triso_ipyc": n * (v(r["ipyc"]) - v(r["buffer"])),
         "_triso_sic": n * (v(r["sic"]) - v(r["ipyc"])),
         "_triso_opyc": n * (v(r["opyc"]) - v(r["sic"])),
+        "_pebble_core": v_core,
         "_pebble_matrix": v_zone - n * v_triso,
-        "_pebble_shell": v(PEBBLE_SHELL_R) - v_zone,
+        "_pebble_shell": v(PEBBLE_SHELL_R) - v(PEBBLE_FUEL_ZONE_R),
     }
 
 

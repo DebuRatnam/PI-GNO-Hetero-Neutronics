@@ -18,12 +18,14 @@ Requires a depletion chain (`--chain`), e.g. the ENDF/B-VIII.0 casl/pwr chain fr
 https://openmc.org/depletion-chains/ . Run once per reactor; the result is cached:
 
     python xs_depletion.py --reactor fhr --chain chain_endfb80_pwr.xml \\
-        --out depletion_fhr.json --burnups 0 20 40 60 80 100
+        --out depletion_fhr.json --burnups 0 20 50 90 130 160 190
 
-    python xs_depletion.py --reactor hex --chain chain_endfb80_pwr.xml \\
-        --out depletion_natrium.json --burnups 0 20 40 60 80
+    python xs_depletion.py --reactor hex --chain chain_endfb80_fast.xml \\
+        --out depletion_natrium.json --burnups 0 20 40 60
 
-Burnups are cumulative MWd/kgHM. Output schema:
+Burnups are cumulative MWd/kgHM, and the top of the grid must cover the sampling
+range in datagen_config (fhr: 190, i.e. the gFHR ~20% FIMA peak discharge burnup at
+~9.6 MWd/kgHM per % FIMA; hex: 60). Output schema:
 
     { "reactor_type", "burnups_mwd_kg": [...], "unit_cell", "chain", "power_density",
       "compositions": { "<material>": [ {nuclide: atom/b-cm}, ... one per burnup ] } }
@@ -39,10 +41,12 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from datagen_config import DEFAULT
-from openmc_models import (PEBBLE_SHELL_R, HEX_PIN_RINGS_FUEL, HEX_R_FUEL_FRAC,
-                           TRISO_R, n_pins,
+from openmc_models import (PEBBLE_CORE_DENSITY, PEBBLE_MATRIX_DENSITY,
+                           PEBBLE_SHELL_DENSITY, PEBBLE_SHELL_R,
+                           FHR_ENRICHMENT_WT_PCT, HEX_PIN_RINGS_FUEL,
+                           HEX_R_FUEL_FRAC, TRISO_R, n_pins,
                            _flibe, _graphite, _ht9, _sodium, _triso_universe,
-                           _u_metal_fuel, _uo2_kernel)
+                           _u_metal_fuel, _uco_kernel)
 
 
 # Specific power [W/gHM] used to convert depletion time to burnup. Representative
@@ -76,21 +80,23 @@ def _fhr_unit_cell(openmc, temperature_k: float, enrichment: float):
     from openmc_models import BED_PACKING_FRACTION, _fuel_pebble_universe
 
     T = temperature_k
-    kernel = _uo2_kernel(openmc, "fuel_pebble", enrichment, T)
-    matrix = _graphite(openmc, "pebble_matrix", 1.60, T)
-    shell = _graphite(openmc, "pebble_shell", 1.75, T)
-    buffer_ = _graphite(openmc, "triso_buffer", 1.00, T)
+    kernel = _uco_kernel(openmc, "fuel_pebble", enrichment, T)
+    peb_core = _graphite(openmc, "pebble_core", PEBBLE_CORE_DENSITY, T)
+    matrix = _graphite(openmc, "pebble_matrix", PEBBLE_MATRIX_DENSITY, T)
+    shell = _graphite(openmc, "pebble_shell", PEBBLE_SHELL_DENSITY, T)
+    buffer_ = _graphite(openmc, "triso_buffer", 1.05, T)
     ipyc = _graphite(openmc, "triso_ipyc", 1.90, T)
     opyc = _graphite(openmc, "triso_opyc", 1.90, T)
     sic = openmc.Material(name="triso_sic")
     sic.add_element("Si", 1.0)
     sic.add_element("C", 1.0)
-    sic.set_density("g/cm3", 3.20)
+    sic.set_density("g/cm3", 3.18)
     sic.temperature = T
     flibe = _flibe(openmc, "coolant", T)
 
     triso_u = _triso_universe(openmc, kernel, buffer_, ipyc, sic, opyc)
-    peb_u, n_triso = _fuel_pebble_universe(openmc, triso_u, matrix, shell, flibe)
+    peb_u, n_triso = _fuel_pebble_universe(openmc, triso_u, peb_core, matrix, shell,
+                                           flibe)
 
     v_peb = 4.0 / 3.0 * np.pi * PEBBLE_SHELL_R ** 3
     a = (v_peb / BED_PACKING_FRACTION) ** (1.0 / 3.0)      # cubic cell edge
@@ -98,7 +104,8 @@ def _fhr_unit_cell(openmc, temperature_k: float, enrichment: float):
         -a / 2, a / 2, -a / 2, a / 2, -a / 2, a / 2, boundary_type="reflective")
     cell = openmc.Cell(fill=peb_u, region=-box)
     geometry = openmc.Geometry([cell])
-    mats = openmc.Materials([kernel, matrix, shell, buffer_, ipyc, opyc, sic, flibe])
+    mats = openmc.Materials([kernel, peb_core, matrix, shell, buffer_, ipyc, opyc,
+                             sic, flibe])
     # Depletion needs the heavy-metal volume to turn power into burnup. It is known
     # exactly (n_triso identical kernels), so set it analytically rather than paying
     # for a stochastic volume calculation -- which in any case cannot infer a
@@ -151,18 +158,31 @@ def _hex_unit_cell(openmc, temperature_k: float, enrichment: float,
 
 # --- depletion driver --------------------------------------------------------
 
+def default_enrichment(reactor_type: str) -> float:
+    """Fresh-fuel enrichment [wt% U-235] for a reactor's unit cell.
+
+    fhr: the gFHR benchmark UCO enrichment. hex: the top of the Natrium HALEU band
+    (the outer, higher-enriched zone; see openmc_models.natrium_model).
+    """
+    return FHR_ENRICHMENT_WT_PCT if reactor_type == "fhr" else 19.75
+
+
 def run_depletion(reactor_type: str, burnups_mwd_kg: List[float], chain: str, *,
-                  temperature_k: float = 900.0, enrichment: float = 19.75,
+                  temperature_k: float = 900.0,
+                  enrichment: Optional[float] = None,
                   particles: int = 5000, batches: int = 60, inactive: int = 15,
                   workdir: str = "depletion_run") -> dict:
     """Deplete the representative unit cell and return the composition table.
 
     burnups_mwd_kg must be ascending and start at 0 (fresh). Returns a dict keyed by
     depletable material name -> list of {nuclide: atom/b-cm}, one entry per burnup.
+    `enrichment` defaults to the reactor's documented value (see default_enrichment).
     """
     import openmc
     import openmc.deplete
 
+    if enrichment is None:
+        enrichment = default_enrichment(reactor_type)
     bu = [float(b) for b in burnups_mwd_kg]
     if bu[0] != 0.0 or any(b2 <= b1 for b1, b2 in zip(bu, bu[1:])):
         raise ValueError("burnups must be ascending and start at 0")
@@ -274,7 +294,9 @@ def main():
                          "(~2) so branch cases can be built past Xe/Sm equilibrium "
                          "instead of interpolating across that step change.")
     ap.add_argument("--temperature", type=float, default=900.0)
-    ap.add_argument("--enrichment", type=float, default=19.75)
+    ap.add_argument("--enrichment", type=float, default=None,
+                    help="wt%% U-235; default is the reactor's documented value "
+                         "(fhr: 19.55 gFHR UCO, hex: 19.75 outer-zone HALEU)")
     ap.add_argument("--particles", type=int, default=5000)
     ap.add_argument("--batches", type=int, default=60)
     ap.add_argument("--inactive", type=int, default=15)

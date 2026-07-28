@@ -48,9 +48,13 @@ from xs_common import MultiGroupXS, blend_xs, two_group as TwoGroupXS
 # 8-way set matching the Natrium core map + explicit HT9 duct steel. material_state
 # is stored as these integer ids per node, but NODE FEATURES use a ONE-HOT encoding
 # (see one_hot_batch) so the model sees no artificial ordinal relationship.
-#   fuel_inner / fuel_outer      -> inner vs outer enrichment zones
-#   primary_control / secondary_control -> 9 primary (37 pins) + 4 secondary (19 pins);
-#                                     XS toggle absorber (inserted) vs follower (out)
+#   fuel_inner / fuel_outer      -> inner vs outer enrichment zones (OUTER is the
+#                                   HIGHER-enrichment zone; see LIBRARY)
+#   primary_control / secondary_control -> 9 primary + 4 secondary B4C control
+#                                     assemblies (NRC-docketed Natrium counts); the
+#                                     37/19 absorber-pin lattices in openmc_models are
+#                                     representative, not vendor numbers. XS toggle
+#                                     absorber (inserted) vs sodium follower (out)
 #   reflector / shield           -> outer radial rings
 #   duct                         -> HT9 duct wall + inter-assembly Na gap (homogenized)
 #   coolant                      -> sodium (assembly interiors / gaps)
@@ -95,17 +99,23 @@ def one_hot_batch(material_state: np.ndarray) -> np.ndarray:
 # Control labels store the INSERTED (absorber) XS; when a control assembly is
 # withdrawn the geometry substitutes CONTROL_FOLLOWER (sodium follower) instead.
 LIBRARY: Dict[str, MultiGroupXS] = {
-    "fuel_inner": TwoGroupXS(   # higher-enrichment U-10Zr metal fuel (inner zone)
-        D1=2.00, D2=1.40,
-        Sigma_r1=0.028, Sigma_r2=0.020,
-        Sigma_s12=0.022,
-        nuSigma_f1=0.018, nuSigma_f2=0.038,   # hotter than the outer zone
-    ),
-    "fuel_outer": TwoGroupXS(   # lower-enrichment U-10Zr metal fuel (outer zone)
+    # SFR radial enrichment zoning: the OUTER zone carries the HIGHER enrichment.
+    # Fast neutrons have a long mean free path, so the core periphery leaks hard and
+    # runs a steep flux gradient; loading more fissile there is what flattens the
+    # radial power profile (standard practice -- ABR-1000, S-PRISM, BN-800 all zone
+    # this way, and Natrium's public description says enrichment "varies by core
+    # position" with the peak below 20 wt%). nuSf_outer > nuSf_inner accordingly.
+    "fuel_inner": TwoGroupXS(   # lower-enrichment U-10Zr metal fuel (inner zone)
         D1=2.00, D2=1.40,
         Sigma_r1=0.028, Sigma_r2=0.020,
         Sigma_s12=0.022,
         nuSigma_f1=0.014, nuSigma_f2=0.028,
+    ),
+    "fuel_outer": TwoGroupXS(   # higher-enrichment U-10Zr metal fuel (outer zone)
+        D1=2.00, D2=1.40,
+        Sigma_r1=0.028, Sigma_r2=0.020,
+        Sigma_s12=0.022,
+        nuSigma_f1=0.018, nuSigma_f2=0.038,   # more fissile than the inner zone
     ),
     "primary_control": TwoGroupXS(   # B4C, 37 absorber pins (inserted) -> strongest
         D1=1.50, D2=1.00,
