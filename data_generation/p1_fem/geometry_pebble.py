@@ -17,23 +17,50 @@ following the published gFHR dimensions and the licensed Hermes control layout:
   - Each pebble center is ONE node (4 cm dia). FLiBe `coolant` fills the bed gaps.
     A fraction of the pebbles are moderator-only `graphite_pebble` (NRC Hermes
     docket: a portion of the core pebbles are moderator pebbles).
-  - 4 `control_element` rigid cylinders sit in the OUTER graphite reflector -- NRC
-    KP-FHR: control elements insert into the side graphite reflector, NOT the bed.
-    Each is a rigid 16-node circle inside a graphite-lined channel.
-  - 3 `shutdown_element` rigid X-shapes insert DIRECTLY into the packed bed (NRC),
-    with no graphite thimble -- direct pebble/FLiBe contact is what gives them their
-    shutdown worth.
+  - `control_element` rigid cylinders sit in the OUTER graphite reflector -- KP-FHR
+    reactivity control system (RCS): control elements insert into engineered channels
+    in the side reflector, NOT the bed. Each is a rigid 16-node circle in a lined
+    channel.
+  - `shutdown_element` rigid X-shapes insert DIRECTLY into the packed bed -- KP-FHR
+    reactivity shutdown system (RSS), no graphite thimble; direct pebble/FLiBe
+    contact is what gives them their shutdown worth.
   - Insertion toggles absorber vs FLiBe-follower XS (moves k_eff). The fuel:moderator
-    pebble ratio is also a reactivity lever.
+    pebble ratio is also a reactivity lever -- it sets the carbon-to-heavy-metal
+    (CHM) atom ratio, the KP-FHR's analogue of an LWR moderator-to-fuel ratio.
 
 Group 2 is a genuine THERMAL group (graphite + FLiBe moderation). N varies per
 sample. Cross sections come from materials_fhr (OpenMC-upgraded when cached).
 
-Sources: NRC KP-FHR Core Design & Analysis Methodology (ML21272A383) and the Hermes
-PSAR for the 4 reflector control + 3 in-bed shutdown element layout; the Kairos gFHR
+MODELLING ASSUMPTIONS -- where this model knowingly departs from the licensed
+methodology (KP-TR-024-NP). All four are echoed into every sample's
+`modelling_assumptions` metadata block so a reviewer sees them without reading this:
+
+  1. BURNUP FIELD. Kairos runs DEM pebble-flow -> ZONER -> spectral zones and
+     generates constants per zone, so burnup is CORRELATED along pebble flow paths.
+     Here burnup is drawn i.i.d. per pebble by default (`burnup_radial_weight = 0`),
+     which is uncorrelated in space. Most of the real correlation is AXIAL and is
+     invisible to a radial slice; the radial part -- slower near-wall pebble flow ->
+     longer residence -> higher burnup at the bed edge -- can be switched on with
+     `burnup_radial_weight > 0`. The magnitude is proprietary, hence opt-in.
+  2. AXIAL SHAPE. This is a slice of the CYLINDRICAL section only. The real core adds
+     upper and lower conic regions, a defueling chute and a fuel insertion region;
+     the transverse buckling in PhysicsConfig.axial_buckling assumes a straight
+     cylinder of the active height and does not represent those.
+  3. REFLECTOR. Modelled as solid graphite. The real reflector is blocks with axial
+     coolant channels, instrumentation penetrations, inter-block gaps and keys, all
+     of which carry FLiBe and soften the reflector's return current.
+  4. SOLUTION METHOD. The licensed methodology has no diffusion step at all: it is
+     full-core 3D explicit Serpent 2 Monte Carlo with burnup. Multigroup diffusion is
+     this project's choice; validate_openmc.py measures the resulting reactivity bias
+     and radial power-shape error, and that measurement is what justifies the labels.
+
+Sources: NRC KP-FHR Core Design and Analysis Methodology topical report KP-TR-024-NP
+Rev 0 (ML24095A258, April 2024; earlier revisions ML21272A383, ML23195A130) for the
+RCS/RSS layout, the fuel-annulus pebble form, buoyancy, moderator pebbles and CHM
+ratio; the Hermes PSAR for the 4 control + 3 shutdown element count; the Kairos gFHR
 benchmark (Satvat et al., Nucl. Eng. Des. 384 (2021) 111461; INL Virtual Test Bed
-gFHR description) for every dimension. Exact Hermes control-element geometry is
-proprietary; r_ctrl (2.6 cm) and control_offset (7.9 cm) are the published gFHR rod.
+gFHR description) for every dimension. Exact Hermes element geometry is proprietary;
+r_ctrl (2.6 cm) and control_offset (7.9 cm) are the published gFHR rod.
 """
 
 from __future__ import annotations
@@ -165,6 +192,30 @@ def _pebble_materials(cfg: PebbleCoreConfig, pebbles: np.ndarray,
     return mat.astype(np.int64)
 
 
+def _apply_radial_burnup(burn: np.ndarray, coords: np.ndarray,
+                         cfg: PebbleCoreConfig, lo: float, hi: float) -> np.ndarray:
+    """Blend a radial ramp into an i.i.d. burnup draw (see burnup_radial_weight).
+
+    b <- (1 - w) * b_iid + w * (lo + (hi - lo) * r / R_bed)
+
+    w = 0 returns `burn` untouched, so the default path and its random stream are
+    bit-identical to the uncorrelated model. w = 1 makes burnup a pure function of
+    radius, which is unphysical on its own -- multi-pass recirculation keeps every
+    burnup present at every radius -- so intermediate values are the meaningful ones.
+    Higher burnup goes to the bed EDGE: near-wall pebbles flow slower, reside longer
+    and burn deeper (the radial shadow of the DEM flow field ZONER resolves properly).
+
+    (lo, hi) is the range `burn` was drawn over, so this works unchanged for the
+    branch-table path (physical MWd/kgHM) and the legacy fallback (burnup fraction).
+    """
+    w = float(getattr(cfg, "burnup_radial_weight", 0.0))
+    if w <= 0.0:
+        return burn
+    w = min(w, 1.0)
+    rho = np.clip(np.hypot(coords[:, 0], coords[:, 1]) / max(cfg.R_bed, 1e-12), 0.0, 1.0)
+    return (1.0 - w) * burn + w * (lo + (hi - lo) * rho)
+
+
 def _free_boundary_edges(elements: np.ndarray) -> np.ndarray:
     """Edges belonging to exactly one triangle (the domain boundary)."""
     e = np.concatenate([elements[:, [0, 1]], elements[:, [1, 2]], elements[:, [2, 0]]], axis=0)
@@ -189,6 +240,7 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     if graphite_pebble_frac is not None:
         from dataclasses import replace
         cfg = replace(cfg, graphite_pebble_frac=float(graphite_pebble_frac))
+    burnup_radial_weight = float(getattr(cfg, "burnup_radial_weight", 0.0))
 
     ctrl, shut = _structure_centers(cfg)
     pebbles = _rsa_pebbles(cfg, shut, rng)
@@ -325,10 +377,13 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         check_axis_coverage(BRANCH, "temperature", *cfg.temperature_k_range, label="fhr")
         burn_mwd = rng.uniform(*cfg.burnup_mwd_kg_range, N)
         temp_k = rng.uniform(*cfg.temperature_k_range, N)
+        burn_mwd = _apply_radial_burnup(burn_mwd, coords, cfg,
+                                        *cfg.burnup_mwd_kg_range)
         burn_mwd[~fuel_mask] = 0.0
         legacy_perturb = False
     else:
         burn = rng.uniform(0.0, cfg.burnup_perturb, N)
+        burn = _apply_radial_burnup(burn, coords, cfg, 0.0, cfg.burnup_perturb)
         temp = 1.0 + rng.uniform(-cfg.temp_perturb, cfg.temp_perturb, N)
         legacy_perturb = True
 
@@ -400,6 +455,36 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
                        if cfg.R_center_refl <= 0.0 else "annular bed"),
         "upscatter_included": True,
         "upscatter_note": "thermal->fast Ss21, operator-level (in A), not in node XS row",
+        # Where this model knowingly departs from the licensed KP-FHR methodology
+        # (NRC KP-TR-024-NP Rev 0, ML24095A258). Carried in every sample so the
+        # departures are auditable without reading the source. See the module
+        # docstring for the long form.
+        "methodology_reference": ("NRC KP-FHR Core Design and Analysis Methodology, "
+                                  "KP-TR-024-NP Rev 0 (ML24095A258, April 2024)"),
+        "modelling_assumptions": {
+            "burnup_field": (
+                "i.i.d. per pebble, spatially uncorrelated" if burnup_radial_weight
+                <= 0.0 else
+                f"radial ramp blended at weight {burnup_radial_weight:g} "
+                f"(higher burnup toward the bed edge)"),
+            "burnup_radial_weight": float(burnup_radial_weight),
+            "burnup_field_departure": (
+                "licensed method derives burnup zones from DEM pebble flow via ZONER, "
+                "so burnup is correlated along flow paths; most of that correlation "
+                "is axial and invisible to a 2D radial slice"),
+            "axial_shape": (
+                "2D slice of the cylindrical bed section only; upper/lower conic "
+                "regions, defueling chute and fuel insertion region not represented, "
+                "and the transverse buckling assumes a straight cylinder"),
+            "reflector": (
+                "solid graphite annulus; real reflector is blocks with axial coolant "
+                "channels, instrumentation penetrations, inter-block gaps and keys"),
+            "solution_method": (
+                "multigroup P1-FEM diffusion; the licensed methodology uses full-core "
+                "3D explicit Serpent 2 Monte Carlo with burnup and no diffusion step. "
+                "Run validate_openmc.py for the resulting reactivity and power-shape "
+                "bias"),
+        },
     }
 
     return CoreGeometry(

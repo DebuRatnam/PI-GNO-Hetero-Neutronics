@@ -258,7 +258,7 @@ errors before committing to a production run.
    *published* gFHR benchmark (Kairos' non-proprietary KP-FHR surrogate): 19.55 wt%
    **UCO** kernels, 0.22 TRISO packing, buoyancy-core pebble, 120/180/182/187/191 cm
    radial build, SS316H (not Hastelloy-N), 100 at% B-10 B4C rods. Element counts come
-   from Hermes as licensed (NRC ML21272A383) where gFHR is silent. `hex` is
+   from Hermes as licensed (NRC KP-TR-024-NP Rev 0, ML24095A258) where gFHR is silent. `hex` is
    **representative, not a vendor spec**: Natrium's public docket fixes the fuel form
    (U-10Zr, sodium-bonded, HT9 clad, peak enrichment <20 wt%), the B4C absorber and
    the 9+4 control assembly counts — but not the pitch, pin lattices, ring layout or

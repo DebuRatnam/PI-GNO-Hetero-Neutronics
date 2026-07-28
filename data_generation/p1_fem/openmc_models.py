@@ -43,9 +43,13 @@ Bed gFHR description; Duchnowski et al. 2023 Table 1): 120 cm bed radius, 60 cm
 graphite reflector, SS316H barrel / FLiBe downcomer / SS316H vessel, 4 cm pebbles
 with a 1.38 cm low-density buoyancy core and an annular TRISO-bearing fuel shell,
 19.55 wt% UCO kernels at 0.22 TRISO packing, 0.60 bed packing, 100 at% B-10 B4C
-control absorber at 2.6 cm radius, 7.9 cm out from the bed edge. The element COUNTS
-(4 reflector control + 3 in-bed shutdown) are Hermes as licensed (NRC ML21272A383),
-not gFHR's 10 reflector rods.
+control absorber at 2.6 cm radius, 7.9 cm out from the bed edge. Control-element
+COUNT follows gFHR too (10 reflector rods), since the bed radius does; the 3 in-bed
+shutdown elements are a KP-FHR feature gFHR omits entirely, taken from the licensed
+design (NRC KP-FHR Core Design and Analysis Methodology, KP-TR-024-NP Rev 0,
+ML24095A258: the reactivity control system inserts into side-reflector channels, the
+reactivity shutdown system inserts directly into the pebble bed). Hermes as licensed
+runs 4 control + 3 shutdown in a ~2 m^3 core -- set n_control=4 if you rescale.
 
 `hex` is REPRESENTATIVE, not a vendor spec. Natrium's public docket fixes the fuel
 form (U-10wt%Zr, sodium-bonded, HT9 clad, peak enrichment < 20 wt%), the B4C
@@ -1011,7 +1015,8 @@ def fhr_model(pb: PebbleCoreConfig, state: BranchState, *,
                              f"{B4C_CONTROL_DENSITY} g/cm3"),
         "axial_cm": float(axial_cm),
         "geometry_source": ("gFHR benchmark (Satvat et al. 2021 / INL VTB) for "
-                            "dimensions and materials; Hermes (NRC ML21272A383) for "
+                            "dimensions and materials; Hermes (NRC KP-TR-024-NP, "
+                            "ML24095A258) for "
                             "the 4 reflector control + 3 in-bed shutdown element count"),
         "double_heterogeneity": ("explicit TRISO lattice in an annular fuel shell "
                                  "inside explicit pebbles"),

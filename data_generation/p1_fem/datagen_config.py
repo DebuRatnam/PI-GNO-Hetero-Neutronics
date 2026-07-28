@@ -229,10 +229,12 @@ class PebbleCoreConfig:
     Barrel + downcomer + vessel are carried as ONE homogenized `vessel` FEM ring;
     openmc_models tallies the three separately and homogenizes them by area.
 
-    Reactivity control follows HERMES AS LICENSED (NRC ML21272A383, KP-FHR Core
-    Design & Analysis Methodology; Hermes PSAR): 4 control elements inserted into the
-    side graphite reflector + 3 shutdown elements inserted DIRECTLY into the packed
-    bed. The gFHR surrogate instead carries 10 reflector rods and no shutdown
+    Reactivity control follows HERMES AS LICENSED (NRC KP-FHR Core Design and
+    Analysis Methodology topical report KP-TR-024-NP Rev 0, ML24095A258, April 2024
+    -- earlier revisions ML21272A383 / ML23195A130; element counts from the Hermes
+    PSAR): the reactivity CONTROL system inserts 4 control elements into engineered
+    channels in the side graphite reflector, and the reactivity SHUTDOWN system
+    inserts 3 shutdown elements DIRECTLY into the packed bed. The gFHR surrogate instead carries 10 reflector rods and no shutdown
     elements, so the element COUNTS here are Hermes' while the element GEOMETRY
     (2.6 cm radius B4C, 7.9 cm from bed edge to rod centre) is the published gFHR rod.
     Each pebble center = one node (4 cm dia, r_peb=2.0). FLiBe fills the bed gaps.
@@ -279,7 +281,8 @@ class PebbleCoreConfig:
     channel_wall: float = 1.6         # graphite channel-lining thickness around elements
 
     # shutdown elements: rigid X-shapes inserted DIRECTLY into the packed bed (NRC
-    # ML21272A383: shutdown elements insert into the bed, control into the reflector).
+    # KP-TR-024-NP: the RSS inserts shutdown elements directly into the pebble bed,
+    # while the RCS inserts control elements into side-reflector channels).
     n_shutdown: int = 3               # 3 X-shaped shutdown elements (Hermes)
     shutdown_ring_frac: float = 0.42  # shutdown-ring radius / R_fuel_out (inner bed)
     # Shutdown-element geometry is NOT public (gFHR carries no shutdown elements at
@@ -313,6 +316,20 @@ class PebbleCoreConfig:
     # gFHR coolant runs 823.15 K in / 923 K out; fuel and graphite sit above the local
     # salt temperature, so the axis spans core inlet to peak fuel.
     temperature_k_range: Tuple[float, float] = (823.15, 1100.0)
+    #
+    # SPATIAL CORRELATION of the burnup field, in [0, 1]. 0 (default) = burnup drawn
+    # i.i.d. per pebble, uncorrelated in space. >0 blends in a linear radial ramp, so
+    # a fraction `w` of the burnup range is explained by radius (bed centre -> edge)
+    # and (1-w) stays random.
+    #
+    # The licensed methodology (KP-TR-024-NP) does not do either: it runs DEM pebble
+    # flow through ZONER to build spectral zones, so burnup is correlated along pebble
+    # FLOW PATHS. Most of that correlation is axial and a 2D radial slice cannot see
+    # it. The radial part is real -- pebbles near the reflector wall flow slower, so
+    # they reside longer and burn deeper -- but its magnitude is proprietary. Hence
+    # opt-in rather than a default: turning it on is a documented modelling choice,
+    # and the value used is recorded in each sample's modelling_assumptions.
+    burnup_radial_weight: float = 0.0
     #
     # FALLBACK PATH (no table): the original ad-hoc perturbation. burnup_perturb is
     # the max burnup FRACTION: fissile depletion lowers nuSf, and fission-product
