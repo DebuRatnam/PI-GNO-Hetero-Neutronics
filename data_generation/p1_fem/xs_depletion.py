@@ -268,8 +268,11 @@ def main():
     ap.add_argument("--chain", required=True, help="OpenMC depletion chain XML")
     ap.add_argument("--out", required=True)
     ap.add_argument("--burnups", type=float, nargs="+",
-                    default=[0.0, 20.0, 40.0, 60.0, 80.0, 100.0],
-                    help="cumulative burnup points [MWd/kgHM], ascending, first = 0")
+                    default=[0.0, 2.0, 20.0, 40.0, 60.0, 100.0],
+                    help="cumulative burnup points [MWd/kgHM], ascending, first = 0. "
+                         "Depletion must START fresh, but include an early point "
+                         "(~2) so branch cases can be built past Xe/Sm equilibrium "
+                         "instead of interpolating across that step change.")
     ap.add_argument("--temperature", type=float, default=900.0)
     ap.add_argument("--enrichment", type=float, default=19.75)
     ap.add_argument("--particles", type=int, default=5000)

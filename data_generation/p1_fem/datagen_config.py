@@ -152,10 +152,18 @@ class HexCoreConfig:
     #
     # These ranges MUST stay inside the tabulated branch points, or the interpolator
     # clamps and every state past the last point silently collapses onto it. The
-    # burnup ceiling tracks the depletion table (depletion_natrium.json currently
-    # reaches 60 MWd/kgHM); raise both together, never this alone.
+    # burnup ceiling tracks the depletion table (depletion_natrium.json reaches
+    # 60 MWd/kgHM); raise both together, never this alone.
     # xs_branch.check_axis_coverage warns at generation time if they drift apart.
-    burnup_mwd_kg_range: Tuple[float, float] = (0.0, 60.0)
+    #
+    # The floor is 2, not 0, on purpose: Xe-135 equilibrates in ~3 days (~0.14
+    # MWd/kgHM here) and Sm-149 in ~1-2 months (~1.4), so a truly fresh endpoint is
+    # the only state in the whole range with no saturating fission-product poison.
+    # Interpolating from it smears that step across the entire axis. An operating
+    # core has no xenon-free fuel anyway. Fast spectrum, so the effect is small here
+    # -- Xe-135's 2.6 Mbarn absorption is a thermal resonance -- but the FHR floor
+    # exists for the same reason and there it matters.
+    burnup_mwd_kg_range: Tuple[float, float] = (2.0, 60.0)
     temperature_k_range: Tuple[float, float] = (750.0, 1000.0)
     #
     # FALLBACK PATH (no table): the original ad-hoc perturbation. xs_perturb is a
@@ -225,7 +233,10 @@ class PebbleCoreConfig:
     # PRIMARY PATH (OpenMC branch table present): burnup [MWd/kgHM] and temperature
     # [K] are drawn per pebble from these ranges and looked up in the branch table,
     # so depletion (including Xe/Sm poisoning) and Doppler are computed.
-    burnup_mwd_kg_range: Tuple[float, float] = (0.0, 100.0)
+    # Floor is 2, not 0: past Xe-135 (~0.09 MWd/kgHM) and Sm-149 (~1.8) equilibrium.
+    # This is a THERMAL core, so those poisons are first-order -- a fresh endpoint
+    # would put a saturating step change at one end of a linearly interpolated axis.
+    burnup_mwd_kg_range: Tuple[float, float] = (2.0, 100.0)
     temperature_k_range: Tuple[float, float] = (900.0, 1100.0)
     #
     # FALLBACK PATH (no table): the original ad-hoc perturbation. burnup_perturb is

@@ -231,13 +231,13 @@ conda activate openmc-env
 cd data_generation/p1_fem
 
 # 1. isotopics vs burnup (representative unit cell)
-python xs_depletion.py --reactor fhr --chain chain_endfb80_pwr.xml \
-    --out depletion_fhr.json --burnups 0 20 40 60 80 100
+python xs_depletion.py --reactor fhr --chain chain_endfb80_thermal.xml \
+    --out depletion_fhr.json --burnups 0 2 20 40 60 100
 
 # 2. branch-case group constants (full core, in-situ weighting)
 python xs_openmc.py --reactor fhr --out xs_fhr.json \
     --depletion depletion_fhr.json \
-    --burnups 0 40 80 --temperatures 900 1100 --rods out in
+    --burnups 2 100 --temperatures 900 1100 --rods out in
 
 # 3. verify the diffusion model against transport
 python validate_openmc.py --reactor fhr --out validation_fhr.csv \
