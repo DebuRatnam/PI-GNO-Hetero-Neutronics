@@ -23,8 +23,9 @@ physics/dataset contract.
 > Status: code only. Data generation runs on CPU (SciPy). The message graph is a
 > **kNN graph** (fixed degree); there is no FRNN/radius path. The CUDA scatter kernel
 > is optional (pure-PyTorch fallback). Node count **N varies per sample** (irregular
-> mesh); the model is N-agnostic. Cross sections are **synthetic** until traceable
-> OpenMC constants are generated — see [OpenMC](#openmc--traceable-cross-sections-next-session).
+> mesh); the model is N-agnostic. Cross sections come from an **OpenMC branch table**
+> when one is present, and fall back to the committed synthetic library when it is
+> not — see [OpenMC](#openmc--traceable-cross-sections).
 
 ## Language split (why each piece is Python or csrc)
 
@@ -41,15 +42,19 @@ physics/dataset contract.
 | File | Role |
 |---|---|
 | `datagen_config.py` | Physics/solver/graph config + **`reactor_type`** dispatch + units + **reactor-aware metadata** (self-describing schema: n_groups, n_materials, node/edge feature order). `HexCoreConfig` (Natrium) and `PebbleCoreConfig` (KP-FHR) hold the per-reactor geometry knobs. `PhysicsConfig.n_groups` is the authoritative group count. Named distinctly from `src/config.py`. |
-| `xs_common.py` | **Multigroup XS layout + `MultiGroupXS` container** shared by both material libraries. Row layout `[D(G), Sr(G), downscatter(G(G-1)/2), nuSf(G)]` (down-scatter-only), byte-compatible with the original 7-scalar two-group at G=2. Column-slice helpers + cache (de)serialization for the OpenMC library. |
-| `materials.py` | **8-way** cross-section library for the Natrium **fast** core (fuel_inner/outer, primary/secondary_control, reflector, shield, **duct** HT9+gap, coolant) + control insert/withdraw (`CONTROL_FOLLOWER`). Loads an OpenMC cache (`xs_natrium.json`) if present, else uses committed defaults. |
-| `materials_fhr.py` | **7-way** cross-section library for the KP-FHR **thermal** core (fuel_pebble, graphite_pebble, control_element, shutdown_element, reflector, coolant=FLiBe, vessel) + insert/withdraw (`FLIBE_FOLLOWER`). Same public symbols as `materials.py`; loads `xs_fhr.json` if present. |
+| `xs_common.py` | **Multigroup XS layout + `MultiGroupXS` container** shared by both material libraries. Row layout `[D(G), Sr(G), downscatter(G(G-1)/2), nuSf(G)]` (down-scatter-only), byte-compatible with the original 7-scalar two-group at G=2. Column-slice helpers, `blend_xs` gray-rod blending, and the up-scatter pair ordering used by the OpenMC branch table. |
+| `materials.py` | **8-way** cross-section library for the Natrium **fast** core (fuel_inner/outer, primary/secondary_control, reflector, shield, **duct** HT9+gap, coolant) + control insert/withdraw (`CONTROL_FOLLOWER`). Loads the OpenMC **branch table** `xs_natrium.json` if present (constants then depend on burnup / temperature / insertion), else uses committed defaults. |
+| `materials_fhr.py` | **7-way** cross-section library for the KP-FHR **thermal** core (fuel_pebble, graphite_pebble, control_element, shutdown_element, reflector, coolant=FLiBe, vessel) + insert/withdraw (`FLIBE_FOLLOWER`). Same public symbols as `materials.py`; loads the branch table `xs_fhr.json` if present. Thermal up-scatter `Ss21` comes from the tallied scatter matrix when a table is loaded, else from the committed `UPSCATTER_21`. |
 | `geometry.py` | Builds the **Natrium hex lattice** (identical structured submesh + homogenized `duct` ring + Delaunay-stitched sodium gaps, 9+4 control). Returns the `CoreGeometry` struct (nodes, `elements[T,3]`, `boundary_edges`, `nodal_volume`, per-node XS). Reusable helpers `triangle_areas`/`nodal_volumes` shared with the pebble builder. |
 | `geometry_pebble.py` | Builds the **annular KP-FHR pebble bed**: central graphite reflector column, RSA-packed fueled pebble annulus (fuel + graphite moderator pebbles) in FLiBe, **4 rigid B4C control cylinders in the outer reflector** (16-node circles in lined channels), **3 rigid X shutdown elements in the inner bed** (lined channels), steel vessel, Delaunay + **free-edge boundary**. Returns the same `CoreGeometry` struct → downstream unchanged. |
 | `operators.py` | Assembles sparse **A** (leakage/removal) and **F** (fission) → `[GN, GN]`, group-major, with **P1 finite elements** (stiffness + lumped mass + Marshak Robin vacuum BC) on `elements`. **G×G block build** driven by `n_groups` (G=2 reproduces the original two-group result). |
 | `solver.py` | Power iteration on `A⁻¹F` (one sparse LU) → `k_eff`, flux `[N,G]`, residual. G inferred from `A.shape / n_nodes`. |
 | `power.py` | Derived node power density = `E_f · Σ_g nuSf_g·φ_g` (same relation reused by the model's power head). |
-| `xs_openmc.py` | **Offline** OpenMC group-constant generation: per-material infinite-medium `openmc.mgxs` tally → flux-weighted collapse → cached JSON per reactor (`xs_natrium.json` / `xs_fhr.json`) that the material modules auto-load. Per-reactor `chi` from the material module. `--dry-run` writes the committed default library (no OpenMC) to test the cache path. Needs OpenMC + ENDF/B data to run — see [OpenMC](#openmc--traceable-cross-sections-next-session). Not in the per-sample hot loop. |
+| `openmc_models.py` | **Full-core OpenMC transport models** mirroring both FEM cores, with **double heterogeneity**: explicit TRISO lattices inside explicit pebbles (`fhr`), explicit hex pin lattices inside each duct (`hex`). Reuses `geometry.py`'s own role/control assignment so the transport core *is* the FEM core. Axially reflective slab + radial vacuum (axial leakage stays in `Bz²`). Also carries the constituent-volume map used to homogenize resolved materials back onto one FEM node. |
+| `xs_depletion.py` | **Unit-cell depletion** (`openmc.deplete`) → fuel isotopics vs burnup [MWd/kgHM] as a cached JSON. Replaces the ad-hoc `(1 - burn)` / `burnup_poison_coeff` multipliers with computed inventories (including Xe/Sm). Needs a depletion chain. |
+| `xs_openmc.py` | **Offline** branch-case group-constant generation. For each (burnup × temperature × rod) branch: run the full-core model, tally `openmc.mgxs` with `domain_type="material"` (**in-situ** spectrum weighting — no infinite media), collapse with `D = 1/(3Σ_tr)`, `Sr = Σ_a + total out-scatter`, full scatter matrix (down **and** up), tallied `chi`, and per-constant Monte Carlo σ. Writes the schema-v2 branch table (`xs_natrium.json` / `xs_fhr.json`). `--dry-run` emits the committed library in the same branch structure so the whole path is testable without OpenMC. Not in the per-sample hot loop. |
+| `xs_branch.py` | **Branch-table reader + interpolator.** Linear in burnup and temperature (clamped, never extrapolated), gray-rod blend on the insertion axis with `D` combined through `Σ_tr`. Supplies the `xs_provenance` block embedded in every sample. |
+| `validate_openmc.py` | **Verification harness**: P1 diffusion vs full-core continuous-energy OpenMC on identical core states → Δk, reactivity bias [pcm], rod worth (both codes), and radial power-shape RMS/max error. CSV + printed summary. This is the table/figure that justifies the diffusion labels. |
 | `graph_build.py` | Builds the **message graph** — a **kNN graph** (fixed degree `knn_k`) on the mesh nodes, no hardcoded neighbors — + **8-dim edge features** `[distance, dx, dy, interface_flag, harmonic_D1, dD1, dSigma_r1, dSigma_s12]`. Separate from the FEM physics graph. |
 | `validate.py` | Pre-training contract checks, **schema-driven from metadata**: shapes, finiteness, `[GN,GN]` dims, `[N,G]` flux, non-empty boundary, **FEM mesh validity** (triangles + boundary edges in range, positive nodal volumes tiling the domain), reference residual, node/edge feature widths, reactor-gated material presence (hex→`duct`; fhr→`fuel_pebble`+`coolant`). |
 | `dataset.py` | Orchestrates one sample → contract dict; **dispatches geometry on `reactor_type`** (hex `make_core` / fhr `make_pebble_core`); schema-driven node features; save/load `.npz`; `make_split_plans` (hex) / `make_split_plans_fhr` sized by `SamplingConfig`. |
@@ -84,11 +89,13 @@ physics/dataset contract.
 ## Run order (when you have a GPU)
 
 ```bash
-# 0. (optional) generate traceable OpenMC group constants; without this the
-#    committed synthetic libraries are used. --dry-run tests the cache path.
+# 0. group constants. Without a branch table the committed synthetic library is
+#    used and every sample is stamped with a warning in geometry_metadata.
+#    --dry-run needs no OpenMC and exercises the full load/interpolate path.
 cd data_generation/p1_fem
-python3 xs_openmc.py --reactor hex --out xs_natrium.json   # (add --dry-run to skip OpenMC)
-python3 xs_openmc.py --reactor fhr --out xs_fhr.json
+python3 xs_openmc.py --reactor hex --out xs_natrium.json --dry-run
+python3 xs_openmc.py --reactor fhr --out xs_fhr.json --dry-run
+#    real runs: see the OpenMC section below (conda env + ENDF/B data required)
 
 # 1. generate a dataset (CPU). Pick the reactor; default scale = 5000/1000/1000.
 #    start small with overrides, scale up when ready.
@@ -152,48 +159,109 @@ cd ../../src && python3 train.py --data ../../datasets/fhr01
 - Vacuum BC is a **Marshak partial-current Robin term** on boundary edges (α=0.5),
   folded into **A** → enforced via L_PDE. Boundary flux is intentionally nonzero, so
   the zero-flux `L_BC` stays **off** (`lambda_bc=0.0`).
-- **Cross sections are synthetic** (hand-tuned, representative order-of-magnitude)
-  until OpenMC constants are generated. Consequence: nominal k_eff is not tuned to a
-  real reactor (hex currently sits ~0.95 rods-out). See the OpenMC section.
+- **Cross-section provenance is recorded per sample** in
+  `geometry_metadata["xs_provenance"]`. With an OpenMC branch table it names the
+  transport code version, evaluated data library, weighting spectrum, branch grid,
+  per-branch k_eff and Monte Carlo σ. Without one it says so explicitly and warns
+  that the constants are hand-tuned. Check that field before publishing anything.
 
-## OpenMC — traceable cross sections (next session)
+## OpenMC — traceable cross sections
 
-The committed cross sections are **synthetic** (right spectrum/ordering, not
-benchmarked). `data_generation/p1_fem/xs_openmc.py` replaces them with **traceable,
-flux-weighted multigroup constants** tallied from ENDF/B via OpenMC. It is an
-**offline pre-step** — the per-sample generator only ever reads the cached JSON.
+The committed cross sections in `materials.py` / `materials_fhr.py` are **synthetic**
+(right spectrum and ordering, not benchmarked). The OpenMC pipeline replaces them with
+**flux-weighted multigroup constants collapsed from ENDF/B continuous-energy data**.
+It is an **offline pre-step**: the per-sample generator only ever reads a cached JSON.
 
-**Current state of `xs_openmc.py`:**
-- Real pipeline implemented: per-material infinite-medium unit cell → `openmc.mgxs`
-  tally (`diffusion-coefficient`, `absorption`, `nu-scatter matrix`, `nu-fission`) on
-  the two-group structure → collapse to `MultiGroupXS` (`Sr = absorption + out-scatter`,
-  down-scatter block only). Fissile materials run `eigenvalue`; others use a Watt
-  driving source. Per-reactor `chi` from the material module.
-- `--dry-run` works with no OpenMC (writes the committed library to test the cache).
-- **Not runnable in this repo's dev env** (OpenMC + nuclear data absent).
+### What the pipeline does
 
-**To make it real (do on a machine you provision):**
-1. **Install OpenMC** (prebuilt, don't compile): `conda create -n openmc -c conda-forge openmc`.
-2. **Get nuclear data**: download an ENDF/B-VIII.0 HDF5 library (~10–15 GB) and
-   `export OPENMC_CROSS_SECTIONS=/path/cross_sections.xml`. (~0.5–2 GB RAM at runtime;
-   disk is the real cost.)
-3. **Validate `_build_material` compositions** — they are documented *literature-level
-   starting points* (HALEU U-10Zr, graphite, B4C, FLiBe, sodium, HT9/steel), **not**
-   your reactor spec. Refine enrichment/densities/Li-7 % before trusting output.
-4. **Run** (in your own Terminal, so the conda env persists):
-   ```bash
-   conda activate openmc
-   cd data_generation/p1_fem
-   python3 xs_openmc.py --reactor hex --out xs_natrium.json
-   python3 xs_openmc.py --reactor fhr --out xs_fhr.json
-   ```
-5. **Drop the JSONs next to the material modules** → `materials.py` / `materials_fhr.py`
-   auto-override the hand-tuned defaults at import (no code change).
-6. **Sanity-check**: infinite-medium k-inf / group constants look physical; re-check the
-   dataset k_eff band (should move toward critical once XS are realistic).
-7. **Optional follow-ups**: feed the tallied thermal up-scatter into
-   `materials_fhr.UPSCATTER_21` (traceable instead of representative); consider
-   full-core flux-weighting instead of infinite-medium if the spectrum looks off.
+| Step | Script | Output |
+|---|---|---|
+| 1. isotopics vs burnup | `xs_depletion.py` | `depletion_<reactor>.json` |
+| 2. branch-case group constants | `xs_openmc.py` | `xs_natrium.json` / `xs_fhr.json` |
+| 3. verification vs transport | `validate_openmc.py` | `validation_<reactor>.csv` |
 
-**Caveat**: infinite-medium weighting + starting-point compositions mean the first
-output is a scaffold result — review before treating as benchmark-grade.
+Design choices, and why each one is there:
+
+- **In-situ weighting.** Every material is tallied with `domain_type="material"`
+  inside the assembled full core, so `Σ_g = ∫Σ(E)φ(E)dE / ∫φ(E)dE` uses the spectrum
+  the material actually sees. No infinite-medium unit cells anywhere.
+- **Double heterogeneity.** Explicit TRISO particles inside explicit pebbles (`fhr`);
+  explicit pin lattices inside each duct (`hex`). Self-shielding is geometric, not
+  assumed. Resolved constituents are then flux-volume homogenized back onto the single
+  material the FEM node carries.
+- **Branch cases.** Burnup, temperature, and control insertion are real transport
+  branches — depleted isotopics, Doppler + S(α,β), rodded/unrodded cores — rather than
+  multipliers on one nominal library. `xs_branch.py` interpolates between them.
+- **Transport-corrected `D`** = `1/(3Σ_tr)` from a tallied transport cross section.
+- **Up-scatter** from the upper triangle of the tallied ν-scatter matrix.
+- **Uncertainties + provenance** on every constant, surfaced into every sample's
+  `geometry_metadata["xs_provenance"]`.
+
+### Setup (macOS, Apple Silicon)
+
+conda-forge has **no `osx-arm64` build of OpenMC**, so the env must be `osx-64` under
+Rosetta. It therefore cannot be the same env as the arm64 torch install — which is
+fine, since only the offline XS step needs OpenMC.
+
+```bash
+softwareupdate --install-rosetta --agree-to-license
+brew install --cask miniforge && conda init zsh && exec zsh
+
+conda config --add channels conda-forge
+conda config --set channel_priority strict
+conda create --name openmc-env --platform osx-64 openmc
+conda activate openmc-env
+
+# nuclear data: ~2.5 GB download, ~10 GB extracted
+mkdir -p ~/nucdata && cd ~/nucdata
+curl -L -o endfb-viii.0-hdf5.tar.xz \
+  https://anl.box.com/shared/static/uhbxlrx7hvxqw27psymfbhi7bx7s6u6a.xz
+tar -xJf endfb-viii.0-hdf5.tar.xz && rm endfb-viii.0-hdf5.tar.xz
+conda env config vars set \
+  OPENMC_CROSS_SECTIONS=$HOME/nucdata/endfb-viii.0-hdf5/cross_sections.xml
+conda activate openmc-env      # re-activate to apply
+```
+
+A **depletion chain** is also needed for step 1 (`https://openmc.org/depletion-chains/`).
+
+### Running it
+
+```bash
+conda activate openmc-env
+cd data_generation/p1_fem
+
+# 1. isotopics vs burnup (representative unit cell)
+python xs_depletion.py --reactor fhr --chain chain_endfb80_pwr.xml \
+    --out depletion_fhr.json --burnups 0 20 40 60 80 100
+
+# 2. branch-case group constants (full core, in-situ weighting)
+python xs_openmc.py --reactor fhr --out xs_fhr.json \
+    --depletion depletion_fhr.json \
+    --burnups 0 40 80 --temperatures 900 1100 --rods out in
+
+# 3. verify the diffusion model against transport
+python validate_openmc.py --reactor fhr --out validation_fhr.csv \
+    --depletion depletion_fhr.json --burnups 0 60
+```
+
+Same three commands with `--reactor hex` and `xs_natrium.json` / `depletion_natrium.json`.
+Drop the JSONs next to the material modules and the generator picks them up at import
+— no code change. Cost scales as (burnups × temperatures × rods) full-core runs; start
+with `--particles 2000 --batches 30 --inactive 10 --axial-cm 10` to shake out geometry
+errors before committing to a production run.
+
+### Before treating the output as benchmark-grade
+
+1. **Review the compositions** in `openmc_models.py`. They are documented
+   literature-level starting points (HALEU U-10Zr, TRISO UO₂, graphite, B4C, FLiBe,
+   sodium, HT9, Hastelloy-N), not a vendor core specification. Enrichment, densities,
+   Li-7 fraction, and TRISO/pebble dimensions should be checked against your spec.
+   Exact Hermes control-element geometry is proprietary; `r_ctrl` is the documented
+   gFHR 5.2 cm rod proxy.
+2. **Read `validation_<reactor>.csv`.** The reactivity bias and radial power-shape
+   error there are what justify labelling the dataset with diffusion solutions.
+3. **Check `max_rel_std`** in the branch table — it bounds the Monte Carlo noise the
+   labels inherit. Raise `--particles`/`--batches` if it is large next to the physics
+   you are resolving.
+4. **Unit-cell depletion is an approximation**: isotopics come from a representative
+   cell, while the collapse spectrum is the full-core one. Recorded in the JSON.

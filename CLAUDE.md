@@ -38,7 +38,10 @@ k_eff              scalar    reference eigenvalue
 flux               [N, G]    reference group fluxes (group-major)
 power_density      [N]       reference derived field
 geometry_metadata             reactor_type, n_groups, n_materials, layout,
-                             control/shutdown insertion, node/edge feature order
+                             control/shutdown insertion, node/edge feature order,
+                             xs_provenance (transport code + data library + branch
+                             grid + Monte Carlo uncertainty, or an explicit warning
+                             when the hand library is in use)
 ```
 
 The node feature order is **schema-driven** (recorded in `geometry_metadata["node_feature_order"]`): `[x, y] + one-hot material (n_materials) + XS block (n_xs_cols(G)) + boundary_flag`. Material is ONE-HOT encoded, not an ordinal id, to avoid a spurious ordering between materials. The XS block order is `D(G), Sigma_r(G), down-scatter(G(G-1)/2), nuSigma_f(G)` (down-scatter-only). For the Natrium `hex` reactor at G=2 this is exactly the original 18-dim layout:
@@ -54,6 +57,22 @@ The node feature order is **schema-driven** (recorded in `geometry_metadata["nod
 The KP-FHR `fhr` reactor at G=2 is 17-dim (7 materials). Read the widths from metadata; never hardcode. `material_state` is stored separately as integer ids; only the node feature vector uses the one-hot block. N varies per sample.
 
 `chi` is fixed nuclear data: incorporate it in `F`, not in node features. Preserve physical units and document normalization factors. Normalize only with statistics fitted on the training split; apply exactly the same transform to validation/test data and retain inverse transforms for reporting.
+
+## Cross-Section Provenance
+
+Cross sections are **OpenMC-derived when a branch table is present**, and hand-tuned otherwise. This is a hard requirement for publication, not a nicety — never present hand-tuned constants as physics.
+
+The pipeline (`openmc_models.py`, `xs_depletion.py`, `xs_openmc.py`, `xs_branch.py`) is **offline**: it writes `xs_natrium.json` / `xs_fhr.json`, which the material modules load at import. The per-sample generator must never call OpenMC.
+
+Non-negotiables when touching that pipeline:
+
+- **Weight in situ.** Materials are tallied with `domain_type="material"` inside the full core. Never reintroduce infinite-medium unit cells for group collapse.
+- **Keep double heterogeneity.** Explicit TRISO inside explicit pebbles (`fhr`); explicit pin lattices inside ducts (`hex`). Smearing fuel into moderator destroys resonance self-shielding.
+- **The transport core must be the FEM core.** `openmc_models.py` imports `geometry.py`'s own role/control assignment; do not re-derive a parallel core map.
+- **`D = 1/(3*Sigma_tr)`** from a tallied transport cross section. Homogenize `Sigma_tr`, never `D` directly.
+- **Burnup and temperature are branch axes**, not multipliers. The legacy `xs_perturb` / `burnup_poison_coeff` path survives only as a no-OpenMC fallback and is not publication-grade.
+- **Axial leakage enters once**, as `Bz^2` in `assemble_AF`. The transport models are axially reflective; do not also add axial leakage there.
+- **Record provenance and uncertainty** in every sample, and verify the diffusion model against continuous-energy transport with `validate_openmc.py` before claiming the labels are physical.
 
 ## Data Generation and Validation with the P1-FEM Hex-Core Solver
 
