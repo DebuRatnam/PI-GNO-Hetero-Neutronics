@@ -38,6 +38,7 @@ from scipy.spatial import Delaunay, cKDTree
 from datagen_config import PebbleCoreConfig
 from geometry import CoreGeometry, triangle_areas, nodal_volumes
 from materials_fhr import BRANCH, MATERIAL_IDS, xs_for_id, up_scatter_for_id
+from xs_branch import check_axis_coverage
 from xs_common import n_xs_cols, nusf_slice, sr_slice
 
 
@@ -298,6 +299,8 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
 
     if BRANCH is not None:
         # OpenMC branch table: physical burnup [MWd/kgHM] + temperature [K] per node.
+        check_axis_coverage(BRANCH, "burnup", *cfg.burnup_mwd_kg_range, label="fhr")
+        check_axis_coverage(BRANCH, "temperature", *cfg.temperature_k_range, label="fhr")
         burn_mwd = rng.uniform(*cfg.burnup_mwd_kg_range, N)
         temp_k = rng.uniform(*cfg.temperature_k_range, N)
         burn_mwd[~fuel_mask] = 0.0

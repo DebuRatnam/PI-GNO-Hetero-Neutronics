@@ -29,6 +29,7 @@ from scipy.spatial import Delaunay
 
 from datagen_config import HexCoreConfig
 from materials import BRANCH, MATERIAL_IDS, ID_TO_MATERIAL, xs_for_id
+from xs_branch import check_axis_coverage
 from xs_common import n_xs_cols, nusf_slice, sr_slice
 
 SQRT3 = np.sqrt(3.0)
@@ -297,6 +298,8 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
         # OpenMC branch table: draw a physical burnup [MWd/kgHM] and temperature [K]
         # per assembly and look the constants up. Depletion and Doppler are computed,
         # not assumed.
+        check_axis_coverage(BRANCH, "burnup", *hx.burnup_mwd_kg_range, label="hex")
+        check_axis_coverage(BRANCH, "temperature", *hx.temperature_k_range, label="hex")
         burn_mwd = rng.uniform(*hx.burnup_mwd_kg_range, size=nA)
         temp_k = rng.uniform(*hx.temperature_k_range, size=nA)
         burn_mwd[-1] = 0.0                                # gap pseudo-assembly

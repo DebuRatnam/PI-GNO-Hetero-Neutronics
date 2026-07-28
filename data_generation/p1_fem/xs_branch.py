@@ -54,6 +54,44 @@ def _lerp(a: float, b: float, w: float) -> float:
     return (1.0 - w) * a + w * b
 
 
+_COVERAGE_WARNED = set()
+
+
+def check_axis_coverage(table: Optional["BranchTable"], axis: str,
+                        lo: float, hi: float, *, label: str = "") -> bool:
+    """Warn (once per distinct mismatch) if a sampling range escapes the branch grid.
+
+    The generator draws burnup and temperature per node from a configured range. If
+    that range extends past the outermost tabulated branch point, `_bracket` clamps:
+    every state beyond the last point collapses onto it, so a slice of the dataset
+    silently carries identical cross sections while the metadata still advertises
+    OpenMC provenance. That is invisible in the output, hence the warning here.
+
+    Returns True when the range is fully covered.
+    """
+    if table is None:
+        return True
+    axis_values = {"burnup": table.burnups,
+                   "temperature": table.temperatures}.get(axis)
+    if not axis_values:
+        return True
+    t_lo, t_hi = min(axis_values), max(axis_values)
+    if lo >= t_lo - 1e-9 and hi <= t_hi + 1e-9:
+        return True
+
+    key = (label, axis, lo, hi, t_lo, t_hi)
+    if key not in _COVERAGE_WARNED:
+        _COVERAGE_WARNED.add(key)
+        import warnings
+        warnings.warn(
+            f"{label or 'config'}: sampled {axis} range [{lo:g}, {hi:g}] extends "
+            f"beyond the tabulated branch points [{t_lo:g}, {t_hi:g}]. Values "
+            f"outside are CLAMPED, so those states all receive identical cross "
+            f"sections. Either narrow the sampling range or add branch points.",
+            stacklevel=2)
+    return False
+
+
 class BranchTable:
     """Tabulated OpenMC group constants over (burnup, temperature, rod)."""
 

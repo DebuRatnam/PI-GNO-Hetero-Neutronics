@@ -149,7 +149,13 @@ class HexCoreConfig:
     # PRIMARY PATH (OpenMC branch table present): a burnup [MWd/kgHM] and a
     # temperature [K] are drawn per assembly from these ranges and looked up in the
     # branch table, so depletion and Doppler are computed quantities.
-    burnup_mwd_kg_range: Tuple[float, float] = (0.0, 80.0)
+    #
+    # These ranges MUST stay inside the tabulated branch points, or the interpolator
+    # clamps and every state past the last point silently collapses onto it. The
+    # burnup ceiling tracks the depletion table (depletion_natrium.json currently
+    # reaches 60 MWd/kgHM); raise both together, never this alone.
+    # xs_branch.check_axis_coverage warns at generation time if they drift apart.
+    burnup_mwd_kg_range: Tuple[float, float] = (0.0, 60.0)
     temperature_k_range: Tuple[float, float] = (750.0, 1000.0)
     #
     # FALLBACK PATH (no table): the original ad-hoc perturbation. xs_perturb is a
