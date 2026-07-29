@@ -58,6 +58,40 @@ def n_xs_cols(G: int) -> int:
     return 3 * G + n_scatter(G)
 
 
+# --- group structure (SINGLE SOURCE OF TRUTH) --------------------------------
+# Ascending group boundaries [eV] per reactor type at G=2. Everything that needs to
+# know where the groups are split reads THIS: the OpenMC collapse (xs_openmc.py),
+# the fission spectra CHI in materials.py / materials_fhr.py, the docstrings, and
+# the per-sample metadata. Changing a boundary here changes the physics -- chi and
+# the hand libraries must be re-derived with it (see the CHI comments).
+#
+#   hex (Natrium, FAST): split at 0.1 MeV. Both groups are fast; the cut sits near
+#     the SFR flux peak (~100-200 keV), so both groups carry comparable flux, and
+#     it is above the U-238 inelastic threshold (~45 keV) that dominates slowing
+#     down in a sodium fast reactor. g2 therefore captures the slowing-down tail
+#     where the capture-to-fission ratio climbs and control worth actually lives.
+#     A cut near the U-238 fast-fission threshold (~0.8-1 MeV) would leave ~10-15%
+#     of the flux in g1 and put the peak, most fission, and most slowing-down all
+#     inside one enormous g2 -- a one-group model with a correction term.
+#   fhr (KP-FHR, THERMAL): split at 0.625 eV, the standard cadmium/thermal cutoff
+#     for a graphite + FLiBe moderated system.
+GROUP_BOUNDARIES_EV = {
+    "hex": [1.0e-5, 1.0e5, 2.0e7],
+    "fhr": [1.0e-5, 0.625, 2.0e7],
+}
+
+
+def group_boundaries_ev(reactor_type: str, G: int) -> List[float]:
+    """Ascending group boundaries (length G+1). Uses the documented per-reactor
+    two-group cutoffs at G=2; log-spaced fill for finer group structures."""
+    if G == 2:
+        return list(GROUP_BOUNDARIES_EV[reactor_type])
+    import math
+    lo, hi = 1.0e-5, 2.0e7
+    lg = [math.log10(lo) + (math.log10(hi) - math.log10(lo)) * i / G for i in range(G + 1)]
+    return [10.0 ** v for v in lg]
+
+
 def d_slice(G: int) -> slice:
     return slice(0, G)
 

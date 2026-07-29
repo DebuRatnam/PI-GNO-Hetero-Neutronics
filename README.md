@@ -120,13 +120,19 @@ cd ../../src && python3 train.py --data ../../datasets/fhr01
   everything downstream (operators/solver/graph/model) is reactor-agnostic and
   schema-driven from metadata. Never hardcode widths — read `n_groups`,
   `n_materials`, `node_feature_order`.
-- **Spectra (G=2).** `hex` (Natrium) is FAST both groups (`0=high-fast`,
-  `1=slow-fast`). `fhr` (KP-FHR) is genuinely thermal (`0=fast`, `1=thermal`, ~0.625
-  eV cut). Never call the Natrium reactor "thermal". DOF ordering group-major
+- **Spectra (G=2).** Group boundaries have ONE home, `xs_common.GROUP_BOUNDARIES_EV`,
+  which drives the OpenMC collapse, the per-reactor `CHI`, and every sample's
+  `geometry_metadata["group_boundaries_ev"]`. `hex` (Natrium) is FAST in both groups
+  (`0=high-fast`, `1=slow-fast`), split at **0.1 MeV** — near the SFR flux peak and
+  above the U-238 inelastic threshold (~45 keV), so both groups carry comparable flux
+  and `g2` is the slowing-down tail where capture and control worth live. `fhr`
+  (KP-FHR) is genuinely thermal (`0=fast`, `1=thermal`), split at **0.625 eV**. Never
+  call the Natrium reactor "thermal", and never call its `g2` "thermal" either — it
+  has no Maxwellian population, just a 1/E-like tail. DOF ordering group-major
   `[g0(N), g1(N)]`.
 - **Per-reactor fixed nuclear data.** Fission spectrum `chi` and axial buckling live
   in the material module and are applied per reactor in `dataset.make_sample`:
-  `materials.CHI=(0.60,0.40)` / `AXIAL_BUCKLING_CM2≈9.1e-4` (fast);
+  `materials.CHI=(0.99,0.01)` / `AXIAL_BUCKLING_CM2≈9.1e-4` (fast);
   `materials_fhr.CHI=(1.0,0.0)` / `≈1.0e-4` (thermal). `chi` lives in **F**, not node
   features.
 - **Axial leakage.** The 2D operator adds `D_g·Bz²` to removal (`PhysicsConfig.axial_buckling`);

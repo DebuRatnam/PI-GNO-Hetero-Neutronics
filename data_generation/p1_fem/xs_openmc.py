@@ -54,25 +54,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from xs_common import (MultiGroupXS, multigroupxs_to_dict, n_scatter,
-                       scatter_pairs, up_scatter_pairs)
+from xs_common import (GROUP_BOUNDARIES_EV, MultiGroupXS, group_boundaries_ev,
+                       multigroupxs_to_dict, n_scatter, scatter_pairs,
+                       up_scatter_pairs)
 
 SCHEMA_VERSION = 2
 
-# Default two-group energy boundaries (eV), ascending [low, ..., high].
-#   fhr : thermal cutoff 0.625 eV (fast | thermal).
-#   hex : fast split ~0.1 MeV (high-fast | slow-fast); both groups fast.
-DEFAULT_BOUNDARIES_EV = {
-    "fhr": [1.0e-5, 0.625, 2.0e7],
-    "hex": [1.0e-5, 1.0e5, 2.0e7],
-}
+# Group boundaries live in xs_common.GROUP_BOUNDARIES_EV so the collapse, the
+# fission spectra CHI, and the sample metadata cannot drift apart. Re-exported here
+# for callers that already import this name.
+DEFAULT_BOUNDARIES_EV = GROUP_BOUNDARIES_EV
 
 # mgxs scores requested per material domain. "nu-scatter matrix" carries (n,2n)
 # multiplication, which is what the diffusion balance in operators.py expects.
@@ -80,13 +77,8 @@ MGXS_TYPES = ["transport", "absorption", "nu-fission", "nu-scatter matrix", "fis
 
 
 def energy_boundaries_ev(reactor_type: str, G: int) -> List[float]:
-    """Ascending group boundaries (length G+1). Uses the documented two-group
-    cutoffs for G=2; log-spaced fill for finer group structures."""
-    if G == 2:
-        return list(DEFAULT_BOUNDARIES_EV[reactor_type])
-    lo, hi = 1.0e-5, 2.0e7
-    lg = [math.log10(lo) + (math.log10(hi) - math.log10(lo)) * i / G for i in range(G + 1)]
-    return [10.0 ** v for v in lg]
+    """Ascending group boundaries (length G+1); see xs_common.group_boundaries_ev."""
+    return group_boundaries_ev(reactor_type, G)
 
 
 def _mat_module(reactor_type: str):

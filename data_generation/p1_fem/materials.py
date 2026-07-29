@@ -2,10 +2,12 @@
 
 Materials: fuel, control_rod, reflector, shield, coolant.
 
-FAST-SPECTRUM data: BOTH groups are fast (g1 = high-fast ~0.8-10 MeV,
-g2 = slow-fast ~1 keV-0.8 MeV). Both groups sit in the fast spectrum — a sodium
-fast reactor has no moderated/slowed-down neutron population. Consequences baked
-into these numbers:
+FAST-SPECTRUM data: BOTH groups are fast, split at 0.1 MeV
+(xs_common.GROUP_BOUNDARIES_EV["hex"]) -- g1 = high-fast 0.1-20 MeV,
+g2 = slow-fast 1e-5 eV-0.1 MeV. g2 spans the slowing-down tail, but a sodium fast
+reactor has no thermalized population in it: there is no moderator, so the flux
+there is a steep 1/E-like tail, not a Maxwellian. Consequences baked into these
+numbers:
 
   - Large, similar diffusion coefficients in both groups (fast neutrons stream
     far; D2 is close to D1, not much smaller as in a moderated lower group).
@@ -155,11 +157,21 @@ LIBRARY: Dict[str, MultiGroupXS] = {
     ),
 }
 
-# Fission spectrum chi for the Natrium FAST core (G=2). Group boundary ~0.8 MeV;
-# a prompt-fission (Watt) spectrum places ~60% of births above 0.8 MeV (g1 high-fast)
-# and ~40% in g2 (slow-fast) -- NOT ~all in g1, because both groups are fast and the
-# boundary sits inside the birth spectrum. Replaces the old shared CHI=(0.95,0.05).
-CHI = (0.60, 0.40)
+# Fission spectrum chi for the Natrium FAST core (G=2). The group boundary is
+# xs_common.GROUP_BOUNDARIES_EV["hex"][1] = 1.0e5 eV (0.1 MeV) -- the SAME cut the
+# OpenMC collapse uses, so chi and the collapsed constants describe one structure.
+#
+# Integrating a Watt spectrum exp(-E/a) sinh(sqrt(bE)) with the fast-induced
+# U-235/Pu-239 parameters (a=0.966 MeV, b=2.842 /MeV) gives 98.78% of births above
+# 0.1 MeV; U-238 fast fission is marginally harder still, and delayed neutrons
+# (beta_eff ~ 0.0035) shift <0.05% into g2. Rounded: (0.99, 0.01).
+#
+# This is NOT the same statement as "chi ~ (0.95,0.05) because the spectrum is
+# fast". At 0.1 MeV essentially nothing is BORN in g2 -- g2 is populated by
+# down-scatter (Sigma_s12: U-238/Fe inelastic + sodium elastic), which is exactly
+# the decomposition two-group diffusion assumes. An earlier revision carried
+# (0.60,0.40), correct for a 0.8 MeV cut that this code never actually used.
+CHI = (0.99, 0.01)
 
 # Transverse (axial) leakage buckling Bz^2 [1/cm^2]. Bz^2 = (pi / H_extrap)^2 with an
 # SFR active height ~100 cm plus a few-cm extrapolation length -> ~(pi/104)^2.

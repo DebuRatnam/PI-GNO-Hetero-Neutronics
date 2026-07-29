@@ -127,10 +127,16 @@ LIBRARY: Dict[str, MultiGroupXS] = {
     ),
 }
 
-# Fission spectrum chi for the KP-FHR THERMAL core (G=2). Thermal cut ~0.625 eV;
-# essentially every fission neutron is born fast (~2 MeV), so ALL birth goes to g1 and
-# none to the thermal group g2. chi_2 must be ~0 (the old shared 0.05 was unphysical
-# for a thermal group).
+# Fission spectrum chi for the KP-FHR THERMAL core (G=2). The group boundary is
+# xs_common.GROUP_BOUNDARIES_EV["fhr"][1] = 0.625 eV -- the SAME cut the OpenMC
+# collapse uses. The Watt spectrum integrated below 0.625 eV is ~2e-10 of the total,
+# so chi_2 is zero to every digit that matters: fission neutrons are born ~2 MeV and
+# reach the thermal group only by moderating down (Sigma_s12), never by birth.
+#
+# Contrast materials.CHI = (0.99, 0.01) for the Natrium fast core: the same physics
+# (births are fast) lands on a different split purely because that cut sits at
+# 0.1 MeV, inside the tail of the birth spectrum, instead of 12 decades below it.
+# Do not copy one reactor's chi to the other.
 CHI = (1.0, 0.0)
 
 # Transverse (axial) leakage buckling Bz^2 [1/cm^2]. Bz^2 = (pi / H_extrap)^2 with the

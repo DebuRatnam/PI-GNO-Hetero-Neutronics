@@ -6,9 +6,13 @@ it can be serialized into each sample's `geometry_metadata`. Do not hard-code th
 values elsewhere; import from this module.
 
 Conventions (recorded in metadata, never changed silently):
-  - Group ordering: BOTH groups are FAST (sodium fast reactor). index 0 =
-    high-fast (group 1, ~0.8-10 MeV), index 1 = slow-fast (group 2,
-    ~1 keV-0.8 MeV). Both sit in the fast spectrum (no moderated lower group).
+  - Group ordering is REACTOR-SPECIFIC; boundaries live in exactly one place,
+    xs_common.GROUP_BOUNDARIES_EV, and are echoed into every sample's metadata.
+      hex (Natrium, FAST):  cut 0.1 MeV. index 0 = high-fast (g1, 0.1-20 MeV),
+        index 1 = slow-fast (g2, 1e-5 eV-0.1 MeV). Both fast; no moderated
+        population in g2, only a slowing-down tail.
+      fhr (KP-FHR, THERMAL): cut 0.625 eV. index 0 = fast, index 1 = genuine
+        thermal group.
   - Mesh: IRREGULAR. An adaptive point cloud (dense near material interfaces,
     coarse in bulk) is triangulated with a Delaunay triangulation; the PDE is
     discretized with linear (P1) finite elements. One NODE = one mesh vertex; node
@@ -27,9 +31,12 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Tuple
 
 
-# Fission spectrum across the two FAST groups. Watt/fission spectrum peaks ~2 MeV
-# -> most neutrons born in the high-energy fast group (g1), a few percent below
-# the g1/g2 cut land in the slow-fast group (g2). NOT a moderated/slowed split.
+# Generic G=2 fission spectrum FALLBACK only. Both reactor modules override it with
+# a chi derived for their own group boundary, and dataset.py prefers the module's
+# CHI whenever its length matches n_groups:
+#   materials.CHI     = (0.99, 0.01)  -- Natrium, 0.1 MeV cut
+#   materials_fhr.CHI = (1.00, 0.00)  -- KP-FHR, 0.625 eV cut
+# This value is reached only for a reactor/group combination that defines neither.
 CHI = (0.95, 0.05)
 
 # Legacy FDM vacuum extrapolation factor (Milne). UNUSED by the FEM assembly; kept
@@ -385,37 +392,55 @@ class DataGenConfig:
         derived from `reactor_type` + `physics.n_groups`, so both Natrium (hex, fast)
         and KP-FHR (pebble, thermal) samples record a self-describing schema.
         """
-        from xs_common import xs_col_names   # local import avoids any load-order cycle
+        # local import avoids any load-order cycle
+        from xs_common import group_boundaries_ev, xs_col_names
         G = self.physics.n_groups
+        boundaries_ev = group_boundaries_ev(self.reactor_type, G)
         if self.reactor_type == "fhr":
-            from materials_fhr import MATERIAL_ORDER, branch_metadata
+            from materials_fhr import CHI as MOD_CHI, MATERIAL_ORDER, branch_metadata
             core_cfg, core_key = asdict(self.pebblecore), "pebblecore"
             discretization = ("P1 finite elements on a KP-FHR pebble-bed core: "
                               "RSA-packed pebble nodes + FLiBe coolant, Delaunay "
                               "triangulated (N varies per sample)")
             spectrum = ("thermal (Kairos KP-FHR / graphite + FLiBe moderated); "
-                        "g1 fast, g2 thermal (~0.625 eV boundary)")
+                        "g1 fast, g2 thermal, cut at "
+                        f"{boundaries_ev[1]:g} eV")
             group_ordering = "0=fast, 1=thermal (thermal-spectrum pebble bed)"
+            pb = self.pebblecore
             geometry_model = ("KP-FHR pebble bed at published gFHR dimensions: "
                               "cylindrical (non-annular) RSA-packed fuel/graphite "
-                              "pebble bed R=120 cm (1 node/pebble) in FLiBe, 60 cm "
-                              "graphite side reflector holding 4 B4C control "
-                              "cylinders (Hermes/NRC), 3 B4C X shutdown elements "
-                              "inserted directly into the bed, SS316H barrel + FLiBe "
-                              "downcomer + SS316H vessel as one homogenized ring")
+                              f"pebble bed R={pb.R_bed:g} cm (1 node/pebble) in FLiBe, "
+                              f"{pb.R_refl - pb.R_bed:g} cm graphite side reflector "
+                              f"holding {pb.n_control} B4C control cylinders in lined "
+                              f"channels (NRC KP-TR-024-NP: RCS inserts into the side "
+                              f"reflector, not the bed), {pb.n_shutdown} B4C X-shaped "
+                              "shutdown elements inserted directly into the bed, "
+                              "SS316H barrel + FLiBe downcomer + SS316H vessel as one "
+                              "homogenized ring")
             node_index_order = "pebbles first, then coolant/structure/reflector/vessel fill; see elements[T,3]"
         else:
-            from materials import MATERIAL_ORDER, branch_metadata
+            from materials import CHI as MOD_CHI, MATERIAL_ORDER, branch_metadata
             core_cfg, core_key = asdict(self.hexcore), "hexcore"
             discretization = ("P1 finite elements on a hexagonal-duct core: structured "
                               "triangulation per assembly + Delaunay-stitched sodium gaps "
                               "(N varies per sample)")
-            spectrum = "fast (sodium fast reactor / Natrium-inspired); high-fast + slow-fast groups"
+            spectrum = ("fast (sodium fast reactor / Natrium-inspired); high-fast + "
+                        f"slow-fast groups, cut at {boundaries_ev[1]:g} eV -- no "
+                        "thermalized population in g2, only a slowing-down tail")
             group_ordering = "0=high-fast(g1), 1=slow-fast(g2); both groups fast spectrum"
+            hx = self.hexcore
             geometry_model = ("Natrium-inspired hexagonal-duct lattice: identical structured "
                               "submesh per assembly, homogenized HT9 duct+gap ring, "
-                              "9 primary + 4 secondary control positions")
+                              f"{hx.n_primary_control} primary + "
+                              f"{hx.n_secondary_control} secondary B4C control "
+                              "positions (TerraPower/NRC docketed count)")
             node_index_order = "hex-mesh order (per-assembly submeshes then gaps); see elements[T,3]"
+
+        # Same selection rule dataset.py applies: the reactor module's chi wins when
+        # its length matches G, else the generic PhysicsConfig fallback. A loaded
+        # branch table overrides this per sample with a TALLIED chi; that value is
+        # recorded alongside the branch provenance, not here.
+        chi_used = MOD_CHI if MOD_CHI is not None and len(MOD_CHI) == G else self.physics.chi
 
         node_feature_order = (["x", "y"]
                               + [f"mat_{m}" for m in MATERIAL_ORDER]
@@ -449,6 +474,11 @@ class DataGenConfig:
             "dof_ordering": "group-major [g0(N), ..., g{G-1}(N)] -> GN",
             "node_index_order": node_index_order,
             "group_ordering": group_ordering,
+            # Ascending group boundaries [eV], length G+1, from the single source of
+            # truth (xs_common.GROUP_BOUNDARIES_EV) that also drives the OpenMC
+            # collapse. chi below is derived for THESE boundaries.
+            "group_boundaries_ev": boundaries_ev,
+            "chi": list(chi_used),
             "spectrum": spectrum,
             "boundary_condition": "vacuum (Marshak partial-current Robin term on boundary edges, alpha=0.5)",
             "material_encoding": "one-hot [" + ", ".join(MATERIAL_ORDER) + "]",
