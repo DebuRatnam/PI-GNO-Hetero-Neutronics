@@ -221,6 +221,18 @@ def prepare_openmc_env() -> str:
                 break
     if xs:
         os.environ["OPENMC_CROSS_SECTIONS"] = xs
+        # Setting the env var is NOT enough. openmc.config snapshots
+        # OPENMC_CROSS_SECTIONS at import, so a value exported afterwards is
+        # invisible to anything reading the config -- and openmc.deplete's
+        # CoupledOperator resolves data through openmc.config['cross_sections']
+        # exclusively, failing with "Cross sections were not specified in
+        # Model.materials and openmc.config['cross_sections'] is not set" even
+        # though the library is present and the env var is correct.
+        try:
+            import openmc
+            openmc.config["cross_sections"] = xs
+        except Exception:
+            pass
     else:
         print("WARNING: no nuclear data library found (OPENMC_CROSS_SECTIONS unset, "
               "openmc.config empty, no library in the usual locations). Transport "

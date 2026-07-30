@@ -209,6 +209,21 @@ def default_enrichment(reactor_type: str) -> float:
     return max(default_zones(reactor_type).values())
 
 
+def _keff_means(keff) -> List[float]:
+    """Unit-cell k_inf per burnup step, from whatever `Results.get_keff()` returned.
+
+    OpenMC has changed this return type across versions: older releases yielded
+    `ufloat`s (`.n` / `.s`), 0.15.x returns a plain float ndarray of shape
+    (n_steps, 2) holding [mean, std_dev] per row. Accept both -- getting this wrong
+    aborts the run only AFTER the depletion has finished, which is the most expensive
+    possible moment to lose the result.
+    """
+    arr = np.asarray(keff, dtype=object) if not isinstance(keff, np.ndarray) else keff
+    if isinstance(keff, np.ndarray) and keff.dtype.kind == "f":
+        return [float(v) for v in (keff[:, 0] if keff.ndim == 2 else keff)]
+    return [float(getattr(k, "n", k)) for k in arr]
+
+
 def _deplete_one_zone(openmc, reactor_type: str, zone: str, enrichment: float,
                       bu: List[float], chain: str, temperature_k: float,
                       particles: int, batches: int, inactive: int,
@@ -257,7 +272,7 @@ def _deplete_one_zone(openmc, reactor_type: str, zone: str, enrichment: float,
             dens = by_name[zone].get_nuclide_atom_densities()
             out.append({nuc: float(d) for nuc, d in dens.items()
                         if float(d) > MIN_ATOM_DENSITY and (not avail or nuc in avail)})
-        keff = [float(k.n) for k in results.get_keff()[1]]
+        keff = _keff_means(results.get_keff()[1])
     finally:
         os.chdir(cwd)
     return out, keff, cell_notes
@@ -280,6 +295,13 @@ def run_depletion(reactor_type: str, burnups_mwd_kg: List[float], chain: str, *,
     Natrium enrichment zoning.
     """
     import openmc
+    from openmc_models import prepare_openmc_env
+
+    # Resolve the executable and the data library BEFORE building any model.
+    # openmc.deplete.CoupledOperator reads openmc.config['cross_sections'], which is
+    # snapshotted at openmc import, so this has to run here rather than being left to
+    # the caller's environment.
+    prepare_openmc_env()
 
     zones = default_zones(reactor_type)
     if enrichment is not None:
