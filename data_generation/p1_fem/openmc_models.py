@@ -131,6 +131,24 @@ TRISO_R = {                   # [cm] cumulative TRISO layer radii
 }
 BED_PACKING_FRACTION = 0.60   # 3D random sphere packing in the pebble bed
 FHR_ENRICHMENT_WT_PCT = 19.55 # gFHR UCO enrichment (HALEU; Hermes quotes 19.74)
+
+# Fresh-fuel enrichment [wt% U-235] per FEM fuel material, and the SINGLE SOURCE OF
+# TRUTH for it. natrium_model builds the zones from this, and xs_depletion.py depletes
+# one unit cell PER ENTRY at that entry's enrichment -- so the depletion isotopics and
+# the transport zones cannot disagree. They previously did: the depletion table stored
+# one "fuel" cell at 19.75 and composition_at silently served it to both zones, which
+# erased fuel_inner's lower enrichment (the composition overrides the fresh material,
+# see _apply_composition).
+#
+# SFR radial enrichment zoning: the OUTER zone is the HIGHER-enriched one, to offset
+# the hard leakage at the core periphery and flatten radial power (standard practice --
+# ABR-1000, S-PRISM, BN-800). Natrium is docketed only as "enrichment varies by core
+# position, peak < 20 wt% U-235"; 15.5 / 19.75 is a representative split at that
+# ceiling, NOT a vendor number.
+HEX_ENRICHMENT_WT_PCT = {
+    "fuel_inner": 15.50,
+    "fuel_outer": 19.75,
+}
 REFLECTOR_GRAPHITE_DENSITY = 1.74   # [g/cm3] gFHR side/plenum reflector graphite
 SS316H_DENSITY = 8.0          # [g/cm3] gFHR core barrel + reactor vessel
 B4C_CONTROL_DENSITY = 1.76    # [g/cm3] gFHR control-rod B4C
@@ -567,16 +585,17 @@ def natrium_model(hx: HexCoreConfig, state: BranchState, *,
         return _hex_assembly_universe(openmc, fem_name, center_mat, bond, clad, na,
                                       pitch, rings, absorber=absorber)
 
-    # SFR radial enrichment zoning: the OUTER zone is the HIGHER-enriched one, to
-    # offset the hard leakage at the core periphery and flatten radial power. Natrium
-    # is docketed only as "enrichment varies by core position, peak < 20 wt% U-235";
-    # 15.5 / 19.75 is a representative split at that ceiling.
+    # Enrichment zoning comes from HEX_ENRICHMENT_WT_PCT (see its comment for the
+    # zoning rationale and provenance); xs_depletion.py deplete's one unit cell per
+    # entry, so `fc` carries per-zone isotopics rather than one shared inventory.
     lat_inner = make_assembly(
-        "fuel_inner", _u_metal_fuel(openmc, "fuel_inner", 15.50, T,
+        "fuel_inner", _u_metal_fuel(openmc, "fuel_inner",
+                                    HEX_ENRICHMENT_WT_PCT["fuel_inner"], T,
                                     fc.get("fuel_inner")),
         pitch_f, HEX_PIN_RINGS_FUEL, absorber=False)
     lat_outer = make_assembly(
-        "fuel_outer", _u_metal_fuel(openmc, "fuel_outer", 19.75, T,
+        "fuel_outer", _u_metal_fuel(openmc, "fuel_outer",
+                                    HEX_ENRICHMENT_WT_PCT["fuel_outer"], T,
                                     fc.get("fuel_outer")),
         pitch_f, HEX_PIN_RINGS_FUEL, absorber=False)
 

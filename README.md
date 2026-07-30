@@ -53,7 +53,7 @@ physics/dataset contract.
 | `solver.py` | Power iteration on `A⁻¹F` (one sparse LU) → `k_eff`, flux `[N,G]`, residual. G inferred from `A.shape / n_nodes`. |
 | `power.py` | Derived node power density = `E_f · Σ_g nuSf_g·φ_g` (same relation reused by the model's power head). |
 | `openmc_models.py` | **Full-core OpenMC transport models** mirroring both FEM cores, with **double heterogeneity**: explicit TRISO lattices inside explicit pebbles (`fhr`), explicit hex pin lattices inside each duct (`hex`). Reuses `geometry.py`'s own role/control assignment so the transport core *is* the FEM core. Axially reflective slab + radial vacuum (axial leakage stays in `Bz²`). Also carries the constituent-volume map used to homogenize resolved materials back onto one FEM node. |
-| `xs_depletion.py` | **Unit-cell depletion** (`openmc.deplete`) → fuel isotopics vs burnup [MWd/kgHM] as a cached JSON. Replaces the ad-hoc `(1 - burn)` / `burnup_poison_coeff` multipliers with computed inventories (including Xe/Sm). Needs a depletion chain. |
+| `xs_depletion.py` | **Unit-cell depletion** (`openmc.deplete`) → fuel isotopics vs burnup [MWd/kgHM] as a cached JSON, keyed **per fuel zone**. `hex` deplete's `fuel_inner` (15.50 wt%) and `fuel_outer` (19.75 wt%) as **two separate runs** — the depleted composition overrides the fresh material, so one shared inventory would erase the enrichment zoning; `fhr` has one fuel material, so one run. Enrichments come from `openmc_models.HEX_ENRICHMENT_WT_PCT` / `FHR_ENRICHMENT_WT_PCT`, the same constants the transport core is built from. Schema v1 (single `"fuel"` key) is rejected on load. Needs a depletion chain. |
 | `xs_openmc.py` | **Offline** branch-case group-constant generation. For each (burnup × temperature × rod) branch: run the full-core model, tally `openmc.mgxs` with `domain_type="material"` (**in-situ** spectrum weighting — no infinite media), collapse with `D = 1/(3Σ_tr)`, `Sr = Σ_a + total out-scatter`, full scatter matrix (down **and** up), tallied `chi`, and per-constant Monte Carlo σ. Writes the schema-v2 branch table (`xs_natrium.json` / `xs_fhr.json`). **Running this is a prerequisite for generating any data** — the material modules have no fallback. Not in the per-sample hot loop. |
 | `xs_branch.py` | **Branch-table reader + interpolator.** Linear in burnup and temperature (clamped, never extrapolated), gray-rod blend on the insertion axis with `D` combined through `Σ_tr`. Supplies the `xs_provenance` block embedded in every sample. |
 | `validate_openmc.py` | **Verification harness**: P1 diffusion vs full-core continuous-energy OpenMC on identical core states → Δk, reactivity bias [pcm], rod worth (both codes), and radial power-shape RMS/max error. CSV + printed summary. This is the table/figure that justifies the diffusion labels. |
@@ -95,13 +95,13 @@ physics/dataset contract.
 #    xs_branch.MissingBranchTable until these exist. Needs the OpenMC conda env +
 #    ENDF/B data; see the OpenMC section below.
 cd data_generation/p1_fem
-python3 xs_depletion.py --reactor hex --chain chain_endfb80_pwr.xml \
-    --out depletion_natrium.json
+python3 xs_depletion.py --reactor hex --chain chain_endfb80_fast.xml \
+    --out depletion_natrium.json --burnups 0 2 20 40 60
 python3 xs_openmc.py --reactor hex --out xs_natrium.json \
     --depletion depletion_natrium.json \
     --burnups 2 30 60 --temperatures 630 1000 --rods out in
 python3 xs_depletion.py --reactor fhr --chain chain_endfb80_pwr.xml \
-    --out depletion_fhr.json
+    --out depletion_fhr.json --burnups 0 2 20 50 90 130 160 190
 python3 xs_openmc.py --reactor fhr --out xs_fhr.json \
     --depletion depletion_fhr.json \
     --burnups 2 95 190 --temperatures 823 1100 --rods out in
@@ -251,22 +251,25 @@ A **depletion chain** is also needed for step 1 (`https://openmc.org/depletion-c
 conda activate openmc-env
 cd data_generation/p1_fem
 
-# 1. isotopics vs burnup (representative unit cell)
+# 1. isotopics vs burnup, one unit cell PER FUEL ZONE (fhr: 1, hex: 2)
 python xs_depletion.py --reactor fhr --chain chain_endfb80_thermal.xml \
-    --out depletion_fhr.json --burnups 0 2 20 40 60 100
+    --out depletion_fhr.json --burnups 0 2 20 50 90 130 160 190
 
 # 2. branch-case group constants (full core, in-situ weighting)
 python xs_openmc.py --reactor fhr --out xs_fhr.json \
     --depletion depletion_fhr.json \
-    --burnups 2 100 --temperatures 900 1100 --rods out in
+    --burnups 2 95 190 --temperatures 823 1100 --rods out in
 
 # 3. verify the diffusion model against transport
 python validate_openmc.py --reactor fhr --out validation_fhr.csv \
-    --depletion depletion_fhr.json --burnups 0 60
+    --depletion depletion_fhr.json --burnups 2 190
 ```
 
-Same three commands with `--reactor hex` and `xs_natrium.json` / `depletion_natrium.json`.
-Drop the JSONs next to the material modules and the generator picks them up at import
+Same three commands with `--reactor hex` and `xs_natrium.json` / `depletion_natrium.json`
+(hex burnups `0 2 20 40 60`, temperatures `630 1000`). Note step 1 costs **two**
+depletion runs for `hex` — one per enrichment zone.
+
+Drop the JSONs next to the material modules and the generator picks them up
 — no code change. Cost scales as (burnups × temperatures × rods) full-core runs; start
 with `--particles 2000 --batches 30 --inactive 10 --axial-cm 10` to shake out geometry
 errors before committing to a production run.

@@ -353,12 +353,17 @@ def _provenance(reactor_type: str, particles: int, batches: int, inactive: int,
     }
     if depletion_table is not None:
         prov["depletion"] = {
+            "schema_version": depletion_table.get("schema_version"),
             "chain": depletion_table.get("chain"),
             "unit_cell": depletion_table.get("unit_cell"),
+            # per-zone: hex deplete's fuel_inner and fuel_outer at their own
+            # enrichments, so a reviewer can see the zoning survived into the isotopics
+            "zone_enrichment_wt_pct": depletion_table.get("zone_enrichment_wt_pct"),
+            "unit_cell_keff": depletion_table.get("unit_cell_keff"),
             "burnups_mwd_kg": depletion_table.get("burnups_mwd_kg"),
             "specific_power_w_per_ghm": depletion_table.get("specific_power_w_per_ghm"),
-            "note": ("isotopics from a representative unit cell; the collapse "
-                     "spectrum is still the full-core one"),
+            "note": ("isotopics from one representative unit cell PER FUEL ZONE; the "
+                     "collapse spectrum is still the full-core one"),
         }
     try:
         import openmc
