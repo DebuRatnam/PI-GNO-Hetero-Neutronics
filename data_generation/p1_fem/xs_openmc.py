@@ -246,11 +246,30 @@ def _core_chi(domains: Dict[str, DomainXS], G: int) -> Tuple[List[float], List[f
 
 # --- one branch --------------------------------------------------------------
 
+def _existing_statepoint(workdir: str) -> Optional[str]:
+    """Newest completed statepoint in a branch workdir, if any.
+
+    A statepoint is only written once its run finishes, so its presence means the
+    transport for that branch is done and only the collapse is outstanding.
+    """
+    import glob
+    found = sorted(glob.glob(os.path.join(workdir, "statepoint.*.h5")))
+    return os.path.abspath(found[-1]) if found else None
+
+
 def run_branch(reactor_type: str, cfg, state, G: int, boundaries_ev: List[float], *,
                particles: int, batches: int, inactive: int,
                depletion_table: Optional[dict], workdir: str,
-               model_kwargs: Optional[dict] = None) -> dict:
-    """Build, run, and collapse ONE branch case. Returns a branch dict for the table."""
+               model_kwargs: Optional[dict] = None,
+               resume: bool = False) -> dict:
+    """Build, run, and collapse ONE branch case. Returns a branch dict for the table.
+
+    `resume` reuses an already-written statepoint in `workdir` instead of repeating
+    the transport solve. The model and mgxs Library are still rebuilt -- they define
+    the tally domains and the homogenization map -- but that costs seconds against
+    the minutes a re-solve would take. Use it to recover the completed branches of an
+    interrupted grid.
+    """
     import openmc
     import openmc.mgxs as mgxs
     import openmc_models
@@ -304,10 +323,16 @@ def run_branch(reactor_type: str, cfg, state, G: int, boundaries_ev: List[float]
     model.tallies = tallies
 
     os.makedirs(workdir, exist_ok=True)
+    reuse = _existing_statepoint(workdir) if resume else None
     cwd = os.getcwd()
     os.chdir(workdir)
     try:
-        sp_path = model.run(openmc_exec=openmc_exec)
+        if reuse is not None:
+            print(f"    resuming from {os.path.basename(reuse)} "
+                  f"(transport already done)", flush=True)
+            sp_path = reuse
+        else:
+            sp_path = model.run(openmc_exec=openmc_exec)
         with openmc.StatePoint(sp_path) as sp:
             lib.load_from_statepoint(sp)
             k = sp.keff
@@ -435,6 +460,9 @@ def main():
     ap.add_argument("--axial-cm", type=float, default=None,
                     help="axial slab height of the reflective transport model")
     ap.add_argument("--workdir", default="openmc_run")
+    ap.add_argument("--resume", action="store_true",
+                    help="reuse any statepoint already present in a branch workdir "
+                         "instead of re-solving it; recovers an interrupted grid")
     args = ap.parse_args()
 
     G = args.groups
@@ -467,9 +495,17 @@ def main():
                     particles=args.particles, batches=args.batches,
                     inactive=args.inactive, depletion_table=dep,
                     workdir=os.path.join(args.workdir, state.key),
-                    model_kwargs=model_kwargs))
+                    model_kwargs=model_kwargs, resume=args.resume))
                 print(f"    k_eff = {branches[-1]['k_eff']:.5f} "
                       f"+/- {branches[-1]['k_eff_std']:.5f}", flush=True)
+                # Rewrite after every branch. A full fhr grid is hours of transport
+                # and the table used to be written only at the end, so an interrupted
+                # run discarded every completed branch with it. The file is small and
+                # a partial table is still a valid one -- its axes just describe what
+                # has been collapsed so far.
+                write_table(args.out, args.reactor, G, boundaries, branches,
+                            _provenance(args.reactor, args.particles, args.batches,
+                                        args.inactive, dep), "openmc")
 
     prov = _provenance(args.reactor, args.particles, args.batches, args.inactive, dep)
     write_table(args.out, args.reactor, G, boundaries, branches, prov, "openmc")
