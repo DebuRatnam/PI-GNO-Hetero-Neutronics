@@ -40,8 +40,10 @@ power_density      [N]       reference derived field
 geometry_metadata             reactor_type, n_groups, n_materials, layout,
                              control/shutdown insertion, node/edge feature order,
                              xs_provenance (transport code + data library + branch
-                             grid + Monte Carlo uncertainty, or an explicit warning
-                             when the hand library is in use)
+                             grid + per-branch k_eff + Monte Carlo uncertainty +
+                             a `converged` flag; never absent -- a sample cannot
+                             exist without transport provenance)
+                             group_boundaries_ev, chi
 ```
 
 The node feature order is **schema-driven** (recorded in `geometry_metadata["node_feature_order"]`): `[x, y] + one-hot material (n_materials) + XS block (n_xs_cols(G)) + boundary_flag`. Material is ONE-HOT encoded, not an ordinal id, to avoid a spurious ordering between materials. The XS block order is `D(G), Sigma_r(G), down-scatter(G(G-1)/2), nuSigma_f(G)` (down-scatter-only). For the Natrium `hex` reactor at G=2 this is exactly the original 18-dim layout:
@@ -62,7 +64,9 @@ Group boundaries live in exactly one place, `xs_common.GROUP_BOUNDARIES_EV` — 
 
 ## Cross-Section Provenance
 
-Cross sections are **OpenMC-derived when a branch table is present**, and hand-tuned otherwise. This is a hard requirement for publication, not a nicety — never present hand-tuned constants as physics.
+Cross sections are **always OpenMC-derived**. There is no hand-tuned fallback library and no `--dry-run`: `materials.py` / `materials_fhr.py` raise `xs_branch.MissingBranchTable` on first cross-section access if their branch table is absent, mis-typed, or collapsed on a different group structure than `xs_common.GROUP_BOUNDARIES_EV`. Running `xs_openmc.py` is a **prerequisite** for generating any data, not an upgrade path. Never reintroduce representative constants as a convenience — they are indistinguishable from physics once they are in a dataset.
+
+The table load is deliberately **lazy** (first XS access, not import). `xs_openmc.py` imports `openmc_models` → `geometry` → `materials` in order to *build* the table, so an import-time requirement deadlocks the bootstrap. Keep the material-id schema, one-hot encoding, `CHI`, and `AXIAL_BUCKLING_CM2` above that line and table-independent.
 
 The pipeline (`openmc_models.py`, `xs_depletion.py`, `xs_openmc.py`, `xs_branch.py`) is **offline**: it writes `xs_natrium.json` / `xs_fhr.json`, which the material modules load at import. The per-sample generator must never call OpenMC.
 
@@ -72,7 +76,7 @@ Non-negotiables when touching that pipeline:
 - **Keep double heterogeneity.** Explicit TRISO inside explicit pebbles (`fhr`); explicit pin lattices inside ducts (`hex`). Smearing fuel into moderator destroys resonance self-shielding.
 - **The transport core must be the FEM core.** `openmc_models.py` imports `geometry.py`'s own role/control assignment; do not re-derive a parallel core map.
 - **`D = 1/(3*Sigma_tr)`** from a tallied transport cross section. Homogenize `Sigma_tr`, never `D` directly.
-- **Burnup and temperature are branch axes**, not multipliers. The legacy `xs_perturb` / `burnup_poison_coeff` path survives only as a no-OpenMC fallback and is not publication-grade.
+- **Burnup and temperature are branch axes**, not multipliers. The legacy `xs_perturb` / `burnup_max` / `burnup_poison_coeff` / `temp_perturb` scale factors are **deleted**; Xe/Sm poison comes from depleted isotopics and Doppler + S(α,β) from the temperature branch. Sampled ranges must lie inside the branch grid — `xs_branch.check_axis_coverage` warns, because outside it every state clamps onto one point.
 - **Axial leakage enters once**, as `Bz^2` in `assemble_AF`. The transport models are axially reflective; do not also add axial leakage there.
 - **Record provenance and uncertainty** in every sample, and verify the diffusion model against continuous-energy transport with `validate_openmc.py` before claiming the labels are physical.
 

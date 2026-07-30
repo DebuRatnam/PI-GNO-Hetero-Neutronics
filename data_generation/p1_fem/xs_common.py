@@ -43,8 +43,9 @@ def up_scatter_pairs(G: int) -> List[Tuple[int, int]]:
     Mirror image of scatter_pairs (same length G(G-1)/2), ordered
     (1->0, 2->0, 2->1, ...). Up-scatter is NOT part of the per-node XS row (that
     stays down-scatter-only, see module docstring); it is carried alongside and
-    assembled at operator level for thermal cores (see materials_fhr.UPSCATTER_21
-    / operators.assemble_AF).
+    assembled at operator level for thermal cores (see materials_fhr.up_scatter_for
+    / operators.assemble_AF), sourced from the upper triangle of the tallied
+    nu-scatter matrix in the branch table.
     """
     return [(gf, gt) for gf in range(G) for gt in range(gf)]
 

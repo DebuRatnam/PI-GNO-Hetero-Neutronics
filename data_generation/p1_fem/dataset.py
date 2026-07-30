@@ -87,20 +87,21 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
             insert_fraction=knobs.get("insert_fraction"), rng=rng)
 
     # Per-reactor FIXED nuclear data: fission spectrum chi + axial-leakage buckling
-    # come from the material module (fast core vs thermal pebble bed differ). Only the
-    # module chi is applied when its length matches n_groups (the hand libraries are
-    # G=2); an explicit multigroup chi in cfg.physics is otherwise preserved.
+    # come from the material module (fast core vs thermal pebble bed differ). These are
+    # the two quantities the branch table cannot supply -- Bz^2 because the transport
+    # models are axially reflective by design, and chi only when a table carries no
+    # tallied spectrum. The module CHI is analytic for that reactor's group boundary
+    # and is used when its length matches n_groups; an explicit multigroup chi in
+    # cfg.physics is otherwise preserved.
     #
-    # With an OpenMC branch table loaded, chi is the TALLIED core-average fission
-    # spectrum at this core's state rather than a hand value -- it shifts with burnup
-    # (Pu-239 births harder than U-235) and with rod insertion.
+    # PREFERRED: the TALLIED core-average fission spectrum at this core's state, which
+    # shifts with burnup (Pu-239 births harder than U-235) and with rod insertion.
+    # geom was built above, so the branch table is already loaded by this point.
     mod = _mat_module(cfg.reactor_type)
     chi = (mod.CHI if getattr(mod, "CHI", None) is not None
            and len(mod.CHI) == cfg.physics.n_groups else cfg.physics.chi)
-    tallied_chi = None
-    if getattr(mod, "BRANCH", None) is not None:
-        tallied_chi = mod.branch_chi(
-            core_rod_frac=float(geom.assembly_metadata.get("mean_control_depth", 0.0)))
+    tallied_chi = mod.branch_chi(
+        core_rod_frac=float(geom.assembly_metadata.get("mean_control_depth", 0.0)))
     if tallied_chi is not None and len(tallied_chi) == cfg.physics.n_groups:
         chi = tallied_chi
     physics = replace(cfg.physics, chi=chi,

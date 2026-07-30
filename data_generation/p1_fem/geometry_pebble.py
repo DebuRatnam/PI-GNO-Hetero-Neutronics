@@ -72,9 +72,9 @@ from scipy.spatial import Delaunay, cKDTree
 
 from datagen_config import PebbleCoreConfig
 from geometry import CoreGeometry, triangle_areas, nodal_volumes
-from materials_fhr import BRANCH, MATERIAL_IDS, xs_for_id, up_scatter_for_id
+from materials_fhr import MATERIAL_IDS, branch, xs_for_id, up_scatter_for_id
 from xs_branch import check_axis_coverage
-from xs_common import n_xs_cols, nusf_slice, sr_slice
+from xs_common import n_xs_cols
 
 
 # --- footprint tests ---------------------------------------------------------
@@ -362,7 +362,6 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     fuel_mask = material_state == MATERIAL_IDS["fuel_pebble"]
     G = len(xs_for_id(0).D)
     ncol = n_xs_cols(G)
-    nf, sr = nusf_slice(G), sr_slice(G)
     xs = np.zeros((N, ncol))
 
     # core-average insertion over BOTH control families: the spectrum shift inserted
@@ -371,21 +370,16 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         len(ctrl_depths) or len(shut_depths)) else np.zeros(0)
     core_rod_frac = float(all_depths.mean()) if all_depths.size else 0.0
 
-    if BRANCH is not None:
-        # OpenMC branch table: physical burnup [MWd/kgHM] + temperature [K] per node.
-        check_axis_coverage(BRANCH, "burnup", *cfg.burnup_mwd_kg_range, label="fhr")
-        check_axis_coverage(BRANCH, "temperature", *cfg.temperature_k_range, label="fhr")
-        burn_mwd = rng.uniform(*cfg.burnup_mwd_kg_range, N)
-        temp_k = rng.uniform(*cfg.temperature_k_range, N)
-        burn_mwd = _apply_radial_burnup(burn_mwd, coords, cfg,
-                                        *cfg.burnup_mwd_kg_range)
-        burn_mwd[~fuel_mask] = 0.0
-        legacy_perturb = False
-    else:
-        burn = rng.uniform(0.0, cfg.burnup_perturb, N)
-        burn = _apply_radial_burnup(burn, coords, cfg, 0.0, cfg.burnup_perturb)
-        temp = 1.0 + rng.uniform(-cfg.temp_perturb, cfg.temp_perturb, N)
-        legacy_perturb = True
+    # OpenMC branch table (the only source of cross sections): physical burnup
+    # [MWd/kgHM] + temperature [K] per node, looked up per state.
+    table = branch()          # raises MissingBranchTable if no OpenMC constants exist
+    check_axis_coverage(table, "burnup", *cfg.burnup_mwd_kg_range, label="fhr")
+    check_axis_coverage(table, "temperature", *cfg.temperature_k_range, label="fhr")
+    burn_mwd = rng.uniform(*cfg.burnup_mwd_kg_range, N)
+    temp_k = rng.uniform(*cfg.temperature_k_range, N)
+    burn_mwd = _apply_radial_burnup(burn_mwd, coords, cfg,
+                                    *cfg.burnup_mwd_kg_range)
+    burn_mwd[~fuel_mask] = 0.0
 
     depth_per_node = np.zeros(N)
     for i in range(N):
@@ -397,37 +391,22 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         else:
             d = 1.0                                               # ignored by non-control
         depth_per_node[i] = d
-        if legacy_perturb:
-            xs[i] = xs_for_id(m, insert_frac=d).as_row()
-        else:
-            xs[i] = xs_for_id(m, insert_frac=d, burnup_mwd_kg=float(burn_mwd[i]),
-                              temperature_k=float(temp_k[i]),
-                              core_rod_frac=core_rod_frac).as_row()
-
-    if legacy_perturb:
-        # fallback (no OpenMC table): DIRECTIONAL fissile depletion lowers nuSf, and
-        # fission-product poison (Xe/Sm) raises the THERMAL removal Sr2; temp is a
-        # symmetric +/- wiggle on nuSf. See PebbleCoreConfig. NOT publication-grade.
-        xs[fuel_mask, nf] *= ((1.0 - burn[fuel_mask]) * temp[fuel_mask])[:, None]
-        xs[fuel_mask, sr.start + 1] *= (
-            1.0 + cfg.burnup_poison_coeff * burn[fuel_mask])   # Sr2 poison
+        xs[i] = xs_for_id(m, insert_frac=d, burnup_mwd_kg=float(burn_mwd[i]),
+                          temperature_k=float(temp_k[i]),
+                          core_rod_frac=core_rod_frac).as_row()
 
     control_rod_cells = np.where(np.isin(material_state, [ctrl_id, shut_id]))[0].astype(np.int64)
 
     # per-node thermal up-scatter Ss_{g2->g1}; assembled into A by
     # operators.assemble_AF. Kept out of the per-node XS row (schema down-scatter-only).
-    # With a branch table this is the tallied g2->g1 transfer at the node's own
-    # temperature -- up-scatter IS a thermal-motion effect, so that matters.
-    if legacy_perturb:
-        upscatter = np.array([up_scatter_for_id(int(m)) for m in material_state],
-                             dtype=float)
-    else:
-        upscatter = np.array([
-            up_scatter_for_id(int(material_state[i]), insert_frac=depth_per_node[i],
-                              burnup_mwd_kg=float(burn_mwd[i]),
-                              temperature_k=float(temp_k[i]),
-                              core_rod_frac=core_rod_frac)
-            for i in range(N)], dtype=float)
+    # This is the TALLIED g2->g1 transfer at the node's own temperature -- up-scatter
+    # IS a thermal-motion effect, so evaluating it at the node's temperature matters.
+    upscatter = np.array([
+        up_scatter_for_id(int(material_state[i]), insert_frac=depth_per_node[i],
+                          burnup_mwd_kg=float(burn_mwd[i]),
+                          temperature_k=float(temp_k[i]),
+                          core_rod_frac=core_rod_frac)
+        for i in range(N)], dtype=float)
 
     meta = {
         "reactor_type": "fhr",

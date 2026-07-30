@@ -21,8 +21,10 @@ Every blend goes through xs_common.blend_xs, so Sr / scatter / nuSf combine line
 while D combines through its transport cross section (harmonic in D) -- averaging D
 directly is not physical.
 
-Absent table -> the caller keeps its committed hand-tuned library, so the pipeline
-still runs without OpenMC.
+The table is REQUIRED. There is no hand-tuned fallback library any more: every
+cross section a sample carries is collapsed from continuous-energy transport, so an
+absent or mis-structured table is a hard error (`require_branch_table`) rather than
+a silent downgrade to constants that were never traceable to an evaluation.
 """
 
 from __future__ import annotations
@@ -341,4 +343,71 @@ def load_branch_table(path: str, *, warn_unconverged: bool = True
             f"x {blob.get('provenance', {}).get('batches', '?')} batches). Datasets "
             f"labelled with it are NOT publication grade -- rerun xs_openmc.py with "
             f"production statistics.", stacklevel=2)
+    return table
+
+
+class MissingBranchTable(RuntimeError):
+    """Raised at import when a reactor's OpenMC group constants are unavailable."""
+
+
+def require_branch_table(path: str, *, reactor_type: str, expect_n_groups: int,
+                         expect_boundaries_ev: List[float]) -> BranchTable:
+    """Load a branch table or raise with the command that would produce it.
+
+    This replaces the old `load_branch_table(...) or hand_library` idiom. The hand
+    libraries are gone, so there is nothing to fall back TO: a material module that
+    cannot load its table has no cross sections at all, and failing at import with
+    an actionable message beats failing later with a KeyError deep in the mesh loop.
+
+    Also verifies the table's group structure against
+    xs_common.GROUP_BOUNDARIES_EV. A table collapsed at a different boundary than
+    the one the fission spectra CHI were derived for is silently wrong -- the
+    constants and chi would describe different group structures -- so that
+    mismatch is refused here rather than discovered as an unexplained k_eff bias.
+    """
+    if not path or not os.path.exists(path):
+        dep = "depletion_natrium.json" if reactor_type == "hex" else "depletion_fhr.json"
+        raise MissingBranchTable(
+            f"no OpenMC group constants for reactor_type={reactor_type!r}: expected "
+            f"{path}\n"
+            f"The hand-tuned fallback libraries were removed -- every cross section "
+            f"must be collapsed from transport. Generate the table first:\n\n"
+            f"    python xs_depletion.py --reactor {reactor_type} "
+            f"--chain <chain.xml> --out {dep}\n"
+            f"    python xs_openmc.py --reactor {reactor_type} --out "
+            f"{os.path.basename(path)} \\\n"
+            f"        --depletion {dep} \\\n"
+            f"        --burnups <...> --temperatures <...> --rods out in\n\n"
+            f"Cover the burnup and temperature ranges the generator samples "
+            f"(see {'HexCoreConfig' if reactor_type == 'hex' else 'PebbleCoreConfig'} "
+            f"in datagen_config.py).\n")
+
+    table = load_branch_table(path)
+    if table is None:
+        raise MissingBranchTable(
+            f"{path} exists but is not a schema-v{2}+ branch table; regenerate it "
+            f"with xs_openmc.py --reactor {reactor_type}.")
+
+    if table.reactor_type != reactor_type:
+        raise MissingBranchTable(
+            f"{path} was generated for reactor_type={table.reactor_type!r}, but is "
+            f"being loaded as {reactor_type!r}.")
+
+    if table.n_groups != int(expect_n_groups):
+        raise MissingBranchTable(
+            f"{path} has n_groups={table.n_groups}, but this reactor's fission "
+            f"spectrum and node-feature schema are built for G={expect_n_groups}. "
+            f"Regenerate with xs_openmc.py --groups {expect_n_groups}.")
+
+    got, want = list(table.group_boundaries_ev), list(expect_boundaries_ev)
+    if len(got) != len(want) or any(
+            abs(a - b) > 1e-6 * max(1.0, abs(b)) for a, b in zip(got, want)):
+        raise MissingBranchTable(
+            f"{path} was collapsed on group boundaries {got} eV, but "
+            f"xs_common.GROUP_BOUNDARIES_EV[{reactor_type!r}] is {want} eV. The "
+            f"fission spectrum CHI in this reactor's material module is derived for "
+            f"the latter; using constants collapsed on a different structure would "
+            f"put the fission source in the wrong group. Regenerate the table, or "
+            f"change the boundary in xs_common and re-derive CHI with it.")
+
     return table

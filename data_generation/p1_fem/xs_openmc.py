@@ -1,10 +1,17 @@
 """OpenMC group-constant generation for the PI-GNO material libraries.
 
-Replaces hand-tuned cross sections with TRACEABLE, flux-weighted multigroup
-constants collapsed from ENDF/B continuous-energy data by OpenMC Monte Carlo
-transport. This is an OFFLINE pre-step: it writes one cached JSON per reactor which
-the material modules load at import. The per-sample data generator never calls
+The ONLY source of cross sections in this project: TRACEABLE, flux-weighted
+multigroup constants collapsed from ENDF/B continuous-energy data by OpenMC Monte
+Carlo transport. This is an OFFLINE pre-step: it writes one cached JSON per reactor
+which the material modules load at import. The per-sample data generator never calls
 OpenMC.
+
+The hand-tuned fallback libraries that materials.py / materials_fhr.py used to carry
+are GONE, and with them `--dry-run`, which existed only to serialize them into the
+branch-table schema. A material module that cannot load its table raises
+xs_branch.MissingBranchTable at import rather than substituting representative
+constants -- so running this script is now a prerequisite for generating any data,
+not an upgrade path.
 
 What makes these constants defensible
 -------------------------------------
@@ -28,7 +35,7 @@ What makes these constants defensible
 
 Usage
 -----
-    # optional but recommended: isotopics vs burnup (see xs_depletion.py)
+    # required for any non-zero burnup branch: isotopics vs burnup (xs_depletion.py)
     python xs_depletion.py --reactor fhr --chain chain_endfb80_pwr.xml \\
         --out depletion_fhr.json
 
@@ -40,12 +47,10 @@ Usage
         --depletion depletion_natrium.json \\
         --burnups 0 40 80 --temperatures 800 1000 --rods out in
 
-Without OpenMC installed the cache plumbing is still exercisable:
-
-    python xs_openmc.py --reactor fhr --out xs_fhr.json --dry-run
-
-which serializes the CURRENT committed hand library as a single-branch table, so the
-load/interpolate path is reproducible and testable. Real runs overwrite it.
+Cover the burnup and temperature ranges the generator samples
+(HexCoreConfig / PebbleCoreConfig .burnup_mwd_kg_range and .temperature_k_range) --
+xs_branch.check_axis_coverage warns when a sampled range escapes the branch grid,
+because outside it every state clamps onto the same constants.
 
 Output schema (v2, self-describing) -- see xs_branch.py for the reader.
 """
@@ -79,27 +84,6 @@ MGXS_TYPES = ["transport", "absorption", "nu-fission", "nu-scatter matrix", "fis
 def energy_boundaries_ev(reactor_type: str, G: int) -> List[float]:
     """Ascending group boundaries (length G+1); see xs_common.group_boundaries_ev."""
     return group_boundaries_ev(reactor_type, G)
-
-
-def _mat_module(reactor_type: str):
-    import materials_fhr
-    import materials
-    return materials_fhr if reactor_type == "fhr" else materials
-
-
-def _default_library(reactor_type: str) -> Dict[str, MultiGroupXS]:
-    """The committed hand-tuned library for a reactor (used by --dry-run)."""
-    return dict(_mat_module(reactor_type).LIBRARY)
-
-
-def _default_chi(reactor_type: str, G: int) -> List[float]:
-    mod = _mat_module(reactor_type)
-    chi = getattr(mod, "CHI", None)
-    if chi is not None and len(chi) == G:
-        return list(chi)
-    out = [0.0] * G
-    out[0] = 1.0                      # fission neutrons born in the fastest group
-    return out
 
 
 # --- raw per-domain tally results -------------------------------------------
@@ -349,64 +333,16 @@ def run_branch(reactor_type: str, cfg, state, G: int, boundaries_ev: List[float]
     }
 
 
-# --- dry run -----------------------------------------------------------------
-
-def _dry_run_branches(reactor_type: str, G: int) -> List[dict]:
-    """Rod-out / rod-in branches built from the committed hand library (no OpenMC).
-
-    Lets the branch-table reader, the interpolator, and the generator be exercised
-    end to end without a transport run, with the SAME rod-branch structure a real run
-    produces -- so gray-rod insertion still interpolates between follower and
-    absorber. `source` in the header marks the data as non-transport-derived.
-    """
-    mod = _mat_module(reactor_type)
-    lib = _default_library(reactor_type)
-    up_tab = getattr(mod, "UPSCATTER_21", {})
-    zero_std = {"D": [0.0] * G, "Sr": [0.0] * G, "nuSf": [0.0] * G}
-
-    def rec_for(name: str, xs) -> dict:
-        rec = multigroupxs_to_dict(xs)
-        up = [0.0] * n_scatter(G)
-        if G == 2 and name in up_tab:
-            up[0] = float(up_tab[name])
-        rec["upscatter"] = up
-        rec["rel_std"] = dict(zero_std)
-        rec["constituents"] = {name: 1.0}
-        return rec
-
-    control = {"primary_control", "secondary_control",
-               "control_element", "shutdown_element"}
-    follower = getattr(mod, "FLIBE_FOLLOWER", None) or getattr(mod, "CONTROL_FOLLOWER")
-
-    rod_in = {name: rec_for(name, xs) for name, xs in lib.items()}
-    rod_out = {name: rec_for(name, xs) for name, xs in lib.items()
-               if name not in control}
-    rod_out["control_follower"] = rec_for("control_follower", follower)
-
-    def branch(rod: str, materials: Dict[str, dict]) -> dict:
-        return {
-            "burnup_mwd_kg": 0.0, "temperature_k": 900.0, "rod": rod,
-            # no transport run happened, so there is no k_eff to report
-            "k_eff": None, "k_eff_std": None,
-            "chi": _default_chi(reactor_type, G), "chi_rel_std": [0.0] * G,
-            "materials": materials,
-            "model_notes": {"source": "committed hand library"},
-        }
-
-    return [branch("out", rod_out), branch("in", rod_in)]
-
-
 # --- table assembly ----------------------------------------------------------
 
 def _provenance(reactor_type: str, particles: int, batches: int, inactive: int,
-                depletion_table: Optional[dict], dry_run: bool) -> dict:
+                depletion_table: Optional[dict]) -> dict:
     prov = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "particles_per_batch": particles,
         "batches": batches,
         "inactive_batches": inactive,
-        "weighting": ("committed hand library (NOT transport-derived)" if dry_run else
-                      "in-situ full-core material-domain flux"),
+        "weighting": "in-situ full-core material-domain flux",
         "D_definition": "1/(3*Sigma_tr), tallied transport cross section",
         "removal_definition": "Sigma_a + total out-scatter (down and up)",
         "scatter_score": "nu-scatter matrix (includes (n,2n) multiplication)",
@@ -424,15 +360,14 @@ def _provenance(reactor_type: str, particles: int, batches: int, inactive: int,
             "note": ("isotopics from a representative unit cell; the collapse "
                      "spectrum is still the full-core one"),
         }
-    if not dry_run:
-        try:
-            import openmc
-            prov["openmc_version"] = str(openmc.__version__)
-        except Exception:
-            pass
-        xs_path = os.environ.get("OPENMC_CROSS_SECTIONS", "")
-        prov["cross_sections_xml"] = xs_path
-        prov["data_library"] = os.path.basename(os.path.dirname(xs_path)) or "unknown"
+    try:
+        import openmc
+        prov["openmc_version"] = str(openmc.__version__)
+    except Exception:
+        pass
+    xs_path = os.environ.get("OPENMC_CROSS_SECTIONS", "")
+    prov["cross_sections_xml"] = xs_path
+    prov["data_library"] = os.path.basename(os.path.dirname(xs_path)) or "unknown"
     return prov
 
 
@@ -480,20 +415,10 @@ def main():
     ap.add_argument("--axial-cm", type=float, default=None,
                     help="axial slab height of the reflective transport model")
     ap.add_argument("--workdir", default="openmc_run")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="write the committed hand library as a single branch (no OpenMC)")
     args = ap.parse_args()
 
     G = args.groups
     boundaries = energy_boundaries_ev(args.reactor, G)
-
-    if args.dry_run:
-        branches = _dry_run_branches(args.reactor, G)
-        prov = _provenance(args.reactor, 0, 0, 0, None, True)
-        write_table(args.out, args.reactor, G, boundaries, branches, prov,
-                    "default-dry-run")
-        print(f"Wrote {len(branches)} dry-run branches (G={G}) -> {args.out}")
-        return
 
     from datagen_config import DEFAULT
     from openmc_models import BranchState
@@ -526,8 +451,7 @@ def main():
                 print(f"    k_eff = {branches[-1]['k_eff']:.5f} "
                       f"+/- {branches[-1]['k_eff_std']:.5f}", flush=True)
 
-    prov = _provenance(args.reactor, args.particles, args.batches, args.inactive,
-                       dep, False)
+    prov = _provenance(args.reactor, args.particles, args.batches, args.inactive, dep)
     write_table(args.out, args.reactor, G, boundaries, branches, prov, "openmc")
     print(f"Wrote {len(branches)} branches (G={G}) -> {args.out}")
 

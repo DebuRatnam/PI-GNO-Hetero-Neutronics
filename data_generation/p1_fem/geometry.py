@@ -28,9 +28,9 @@ import numpy as np
 from scipy.spatial import Delaunay
 
 from datagen_config import HexCoreConfig
-from materials import BRANCH, MATERIAL_IDS, ID_TO_MATERIAL, xs_for_id
+from materials import MATERIAL_IDS, ID_TO_MATERIAL, branch, xs_for_id
 from xs_branch import check_axis_coverage
-from xs_common import n_xs_cols, nusf_slice, sr_slice
+from xs_common import n_xs_cols
 
 SQRT3 = np.sqrt(3.0)
 DUCT_RING_FRAC = 0.18   # radial fraction of each hex homogenized as duct (HT9+gap)
@@ -294,42 +294,28 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
     # is what the rod-out / rod-in branch pair measures.
     core_rod_frac = float(depths.mean()) if len(depths) else 0.0
 
-    if BRANCH is not None:
-        # OpenMC branch table: draw a physical burnup [MWd/kgHM] and temperature [K]
-        # per assembly and look the constants up. Depletion and Doppler are computed,
-        # not assumed.
-        check_axis_coverage(BRANCH, "burnup", *hx.burnup_mwd_kg_range, label="hex")
-        check_axis_coverage(BRANCH, "temperature", *hx.temperature_k_range, label="hex")
-        burn_mwd = rng.uniform(*hx.burnup_mwd_kg_range, size=nA)
-        temp_k = rng.uniform(*hx.temperature_k_range, size=nA)
-        burn_mwd[-1] = 0.0                                # gap pseudo-assembly
-        legacy_perturb = False
-    else:
-        # fallback: the documented ad-hoc perturbation (see HexCoreConfig)
-        temp = 1.0 + rng.uniform(-hx.xs_perturb, hx.xs_perturb, size=nA)
-        burn = rng.uniform(0.0, hx.burnup_max, size=nA)
-        legacy_perturb = True
+    # OpenMC branch table (the only source of cross sections): draw a physical burnup
+    # [MWd/kgHM] and temperature [K] per assembly and look the constants up.
+    # Depletion and Doppler are computed, not assumed.
+    table = branch()          # raises MissingBranchTable if no OpenMC constants exist
+    check_axis_coverage(table, "burnup", *hx.burnup_mwd_kg_range, label="hex")
+    check_axis_coverage(table, "temperature", *hx.temperature_k_range, label="hex")
+    burn_mwd = rng.uniform(*hx.burnup_mwd_kg_range, size=nA)
+    temp_k = rng.uniform(*hx.temperature_k_range, size=nA)
+    burn_mwd[-1] = 0.0                                # gap pseudo-assembly
 
     G = len(xs_for_id(0).D)
     ncol = n_xs_cols(G)
-    nusf, srs = nusf_slice(G), sr_slice(G)
     cross_sections = np.zeros((coords.shape[0], ncol))
     for n in range(coords.shape[0]):
         h = node_hex[n]
         depth = float(hex_depth[h]) if h >= 0 else 1.0   # gap = coolant, depth ignored
         m = int(material_state[n])
-        if legacy_perturb:
-            xs = np.array(xs_for_id(m, insert_frac=depth).as_row())
-            xs[nusf] *= temp[h]                           # temperature/density wiggle
-            if m in fuel_ids:                             # directional burnup, fuel only
-                xs[nusf] *= (1.0 - burn[h])               # fissile depletion
-                xs[srs] *= (1.0 + hx.burnup_poison_coeff * burn[h])  # poison (Sr up)
-        else:
-            bu = float(burn_mwd[h]) if m in fuel_ids else 0.0
-            xs = np.array(xs_for_id(m, insert_frac=depth, burnup_mwd_kg=bu,
-                                    temperature_k=float(temp_k[h]),
-                                    core_rod_frac=core_rod_frac).as_row())
-        cross_sections[n] = xs
+        bu = float(burn_mwd[h]) if m in fuel_ids else 0.0
+        cross_sections[n] = np.array(
+            xs_for_id(m, insert_frac=depth, burnup_mwd_kg=bu,
+                      temperature_k=float(temp_k[h]),
+                      core_rod_frac=core_rod_frac).as_row())
 
     # --- boundary = outer hex edges with no neighbouring assembly ---
     # For each hexagon edge, the neighbour (if any) sits at 2*mid - center. If no

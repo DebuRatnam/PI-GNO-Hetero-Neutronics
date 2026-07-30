@@ -164,7 +164,8 @@ class HexCoreConfig:
     # rings <= this = INNER enrichment zone, else OUTER. SFR radial zoning puts the
     # HIGHER enrichment in the OUTER zone: the periphery leaks hard (long fast
     # mean free path, steep flux gradient), so the outer zone needs more fissile to
-    # flatten the radial power profile. See materials.LIBRARY / openmc_models.
+    # flatten the radial power profile. See openmc_models.natrium_model (the two zones
+    # are separate enrichments there, and separate tally domains in the branch table).
     enrichment_boundary_ring: int = 2
 
     # Reactivity control: 9 primary + 4 secondary control assemblies, B4C absorber.
@@ -197,15 +198,11 @@ class HexCoreConfig:
     # fuel a few hundred K above the local coolant, so the Doppler axis spans core
     # inlet to peak fuel rather than sitting entirely above the outlet temperature.
     temperature_k_range: Tuple[float, float] = (630.0, 1000.0)
-    #
-    # FALLBACK PATH (no table): the original ad-hoc perturbation. xs_perturb is a
-    # small SYMMETRIC +/- temperature/density wiggle on nuSf; burnup is DIRECTIONAL
-    # (fuel only): fissile depletion lowers nuSf by up to burnup_max, and
-    # fission-product poison raises removal by burnup_poison_coeff*burnup. Kept so
-    # the generator still runs without OpenMC -- NOT publication-grade.
-    xs_perturb: float = 0.03          # symmetric +/- temperature/density wiggle (nuSf)
-    burnup_max: float = 0.12          # max burnup fraction (directional depletion)
-    burnup_poison_coeff: float = 0.30 # removal rise per unit burnup (fission products)
+    # Both ranges must fall inside the branch grid in xs_natrium.json; states outside
+    # it clamp onto the outermost tabulated point (xs_branch.check_axis_coverage
+    # warns). The ad-hoc xs_perturb / burnup_max / burnup_poison_coeff multipliers
+    # that used to stand in for depletion and Doppler are gone -- burnup and
+    # temperature are transport branch axes now, not scale factors.
 
 
 @dataclass(frozen=True)
@@ -337,14 +334,11 @@ class PebbleCoreConfig:
     # opt-in rather than a default: turning it on is a documented modelling choice,
     # and the value used is recorded in each sample's modelling_assumptions.
     burnup_radial_weight: float = 0.0
-    #
-    # FALLBACK PATH (no table): the original ad-hoc perturbation. burnup_perturb is
-    # the max burnup FRACTION: fissile depletion lowers nuSf, and fission-product
-    # poison (Xe/Sm) raises the THERMAL removal Sr2 by burnup_poison_coeff*burnup.
-    # temp_perturb is a symmetric +/- wiggle on nuSf. NOT publication-grade.
-    burnup_perturb: float = 0.10      # max burnup fraction (directional depletion)
-    burnup_poison_coeff: float = 0.60 # thermal-removal rise per unit burnup (poison)
-    temp_perturb: float = 0.03        # symmetric +/- temperature/density wiggle (nuSf)
+    # burnup_mwd_kg_range / temperature_k_range must fall inside the branch grid in
+    # xs_fhr.json; states outside clamp onto the outermost tabulated point
+    # (xs_branch.check_axis_coverage warns). The ad-hoc burnup_perturb /
+    # burnup_poison_coeff / temp_perturb multipliers are gone: Xe/Sm poison comes from
+    # depleted isotopics and Doppler + S(alpha,beta) from the temperature branch.
     # per-sample variability drawn per split (see make_split_plans_fhr); ranges here
     # bound the fraction of control / shutdown inserted and the moderator-pebble
     # fraction (fuel:moderator ratio is a real KP-FHR reactivity lever).
@@ -450,13 +444,9 @@ class DataGenConfig:
         # Where the cross sections came from. This is the provenance a reviewer needs
         # to judge the labels: transport code + version, evaluated nuclear data
         # library, weighting spectrum, branch grid, per-branch k_eff, Monte Carlo
-        # uncertainty. Absent table -> say so plainly rather than implying rigor.
-        xs_prov = branch_metadata() or {
-            "source": "hand-tuned committed library (no OpenMC branch table present)",
-            "weighting": "none -- representative order-of-magnitude constants",
-            "warning": ("these constants are NOT traceable to an evaluated nuclear "
-                        "data library; run xs_openmc.py before publishing results"),
-        }
+        # uncertainty. Never None -- the material module raises at import if it has no
+        # branch table, so a sample cannot exist without transport provenance.
+        xs_prov = branch_metadata()
 
         return {
             "xs_provenance": xs_prov,
