@@ -153,16 +153,31 @@ def _homogenize(parts: Dict[str, Tuple[DomainXS, float]], G: int
                 ) -> Tuple[MultiGroupXS, np.ndarray, Dict[str, List[float]]]:
     """Flux-volume homogenize resolved constituents onto one FEM material.
 
-    Weight w_{i,g} = V_i * phi_{i,g}. Reaction rates add, so
-        Sigma_hom,g = sum_i w_{i,g} Sigma_{i,g} / sum_i w_{i,g}
+    Reaction rates add, so the rate-conserving homogenized constant is
+        Sigma_hom,g = sum_i w_{i,g} Sigma_{i,g} / sum_i w_{i,g},
+        w_{i,g} = integral of phi_g over constituent i's region
     and the scatter matrix is weighted by the INCOMING group flux. The diffusion
     coefficient is homogenized through the transport cross section
     (Sigma_tr adds; D = 1/(3 Sigma_tr)) -- averaging D directly is wrong.
 
+    The weight is DomainXS.flux alone, with NO further volume factor. OpenMC's
+    material-filtered flux score is already volume integrated (int phi dV over every
+    instance of that material in the core), which is exactly w. Multiplying it by the
+    homogenize-map volume again weights each constituent by V^2 and breaks rate
+    conservation -- it suppressed the fhr fuel_pebble nuSigma_f by ~30x, because the
+    UCO kernels are ~1% of a pebble, and biased the hex fuel constituents by ~20%.
+    Verified against the tallies: two graphite regions of one pebble tallied a flux
+    ratio of 1.224 against a volume ratio of 1.2122.
+
+    This relies on each constituent material living ONLY inside the FEM material it
+    maps to, which is why openmc_models registers one bond/clad/sodium instance PER
+    ROLE rather than one globally. The map volumes are retained as provenance
+    (`constituents`) and as the record of the transport build.
+
     Returns (MultiGroupXS, up-scatter block, relative-std-dev dict).
     """
     names = list(parts)
-    W = np.stack([parts[n][0].flux * parts[n][1] for n in names])      # [P, G]
+    W = np.stack([parts[n][0].flux for n in names])                   # [P, G]
     tot = W.sum(axis=0)
     tot[tot <= 0.0] = 1.0
 

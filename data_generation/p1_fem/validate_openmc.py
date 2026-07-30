@@ -18,6 +18,24 @@ and reports, per state:
     radial power shape: RMS and max relative deviation between the diffusion power
     density and the OpenMC fission-rate distribution, binned in common radial rings
 
+MATCHING THE AXIAL TREATMENT. The transport models are axially REFLECTIVE by design
+(openmc_models sets reflective ZPlanes; see CLAUDE.md -- axial leakage enters exactly
+once, as Bz^2 in operators.assemble_AF). A dataset label therefore carries an axial
+leakage sink that the continuous-energy model does not, and differencing the two
+directly measures the axial buckling rather than the diffusion approximation: for the
+hex core at Bz^2 = 9.1e-4 that debit alone is ~16,000 pcm, which would swamp the bias
+being measured.
+
+So each state is solved TWICE with the diffusion model:
+
+    k_diffusion             Bz^2 = 0  -- axially infinite, MATCHES the transport model.
+                            This is the pair dk / d_rho / power shape come from, and
+                            it is the diffusion-vs-transport bias the paper reports.
+    k_diffusion_with_axial  the dataset's own label, Bz^2 from the material module.
+
+`axial_debit_pcm` is the reactivity difference between them, reported so the axial
+treatment stays visible rather than hidden inside the bias.
+
 Each state is run at a UNIFORM burnup and temperature so the transport model can
 represent exactly the same core the FEM model sees (the dataset's per-node burnup
 scatter has no continuous-energy counterpart). Control insertion is held at the
@@ -34,6 +52,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Dict, List, Optional, Tuple
 
@@ -62,14 +81,47 @@ def _uniform_config(cfg: DataGenConfig, burnup: float, temperature: float
         temperature_k_range=(temperature, temperature)))
 
 
-def _diffusion_state(cfg: DataGenConfig, rod: str, seed: int) -> dict:
-    """One labelled sample at a rod endpoint (the dataset's own pipeline)."""
+@contextmanager
+def _no_axial_leakage(reactor_type: str):
+    """Temporarily set the material module's Bz^2 to zero.
+
+    make_sample takes the axial buckling from the material module (it is geometric, so
+    it cannot come from an axially reflective transport model), which is the right
+    default for a dataset label and the wrong one for a comparison against that
+    transport model. Patching it here keeps the override inside the validation harness:
+    the generator's own behaviour is untouched.
+    """
+    import materials as _hex
+    import materials_fhr as _fhr
+    mod = _fhr if reactor_type == "fhr" else _hex
+    saved = mod.AXIAL_BUCKLING_CM2
+    mod.AXIAL_BUCKLING_CM2 = 0.0
+    try:
+        yield
+    finally:
+        mod.AXIAL_BUCKLING_CM2 = saved
+
+
+def _diffusion_state(cfg: DataGenConfig, rod: str, seed: int, *,
+                     axial_leakage: bool = True) -> dict:
+    """One labelled sample at a rod endpoint (the dataset's own pipeline).
+
+    `axial_leakage=False` zeroes Bz^2 so the solve matches the axially reflective
+    transport model; see the module docstring on matching the axial treatment.
+    """
     from dataset import make_sample
     frac = 1.0 if rod == "in" else 0.0
-    rng = np.random.default_rng(seed)
-    if cfg.reactor_type == "fhr":
-        return make_sample(cfg, rng=rng, insert_control=frac, insert_shutdown=frac)
-    return make_sample(cfg, rng=rng, insert_fraction=frac)
+
+    def build():
+        rng = np.random.default_rng(seed)          # same seed -> same mesh/packing
+        if cfg.reactor_type == "fhr":
+            return make_sample(cfg, rng=rng, insert_control=frac, insert_shutdown=frac)
+        return make_sample(cfg, rng=rng, insert_fraction=frac)
+
+    if axial_leakage:
+        return build()
+    with _no_axial_leakage(cfg.reactor_type):
+        return build()
 
 
 def _radial_power_diffusion(sample: dict, edges: np.ndarray) -> np.ndarray:
@@ -176,8 +228,11 @@ def run(reactor_type: str, burnups: List[float], temperatures: List[float],
         for T in temperatures:
             cfg = _uniform_config(base, bu, T)
             for rod in rods:
-                sample = _diffusion_state(cfg, rod, seed)
+                # matched to the axially reflective transport model (Bz^2 = 0) ...
+                sample = _diffusion_state(cfg, rod, seed, axial_leakage=False)
                 k_diff = float(sample["k_eff"])
+                # ... and the dataset's own label, which carries the axial sink
+                k_diff_ax = float(_diffusion_state(cfg, rod, seed)["k_eff"])
                 state = BranchState(burnup_mwd_kg=float(bu), temperature_k=float(T),
                                     rod=rod)
                 k_ce, k_std, radial = _run_transport(
@@ -193,10 +248,12 @@ def run(reactor_type: str, burnups: List[float], temperatures: List[float],
                     "temperature_k": T,
                     "rod": rod,
                     "k_diffusion": k_diff,
+                    "k_diffusion_with_axial": k_diff_ax,
                     "k_openmc": k_ce,
                     "k_openmc_std": k_std,
                     "dk": k_diff - k_ce,
                     "d_rho_pcm": (1.0 / k_ce - 1.0 / k_diff) * 1.0e5,
+                    "axial_debit_pcm": (1.0 / k_diff_ax - 1.0 / k_diff) * 1.0e5,
                     "power_shape_rms_rel": rms,
                     "power_shape_max_rel": mx,
                     "n_nodes": int(sample["material_state"].shape[0]),
@@ -204,7 +261,9 @@ def run(reactor_type: str, burnups: List[float], temperatures: List[float],
                 r = rows[-1]
                 print(f"  {state.key}: k_diff={k_diff:.5f} k_ce={k_ce:.5f}"
                       f" ({k_std:.5f})  d_rho={r['d_rho_pcm']:+.0f} pcm"
-                      f"  shape RMS={rms:.3%}", flush=True)
+                      f"  shape RMS={rms:.3%}"
+                      f"  [dataset k={k_diff_ax:.5f}, axial "
+                      f"{r['axial_debit_pcm']:+.0f} pcm]", flush=True)
     return rows
 
 
@@ -255,11 +314,15 @@ def main():
         w.writerows(rows)
 
     d_rho = np.array([r["d_rho_pcm"] for r in rows])
+    axial = np.array([r["axial_debit_pcm"] for r in rows])
     rms = np.array([r["power_shape_rms_rel"] for r in rows])
     print("\nSummary")
     print(f"  states                : {len(rows)}")
     print(f"  reactivity bias       : mean {d_rho.mean():+.0f} pcm, "
-          f"max |{np.abs(d_rho).max():.0f}| pcm")
+          f"max |{np.abs(d_rho).max():.0f}| pcm   "
+          f"(diffusion vs transport, both axially infinite)")
+    print(f"  axial leakage debit   : mean {axial.mean():+.0f} pcm  "
+          f"(dataset label vs the Bz^2=0 solve above; not a model error)")
     print(f"  power shape RMS error : mean {np.nanmean(rms):.2%}, "
           f"max {np.nanmax(rms):.2%}")
     for w in _rod_worths(rows):
