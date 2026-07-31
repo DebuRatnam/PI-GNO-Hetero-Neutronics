@@ -201,16 +201,20 @@ def make_split_plans(sampling: SamplingConfig) -> tuple:
     """Build the 3 split plans, sized by `sampling`. Counts default to the
     large-study target (5000/1000/1000); override via the generate.py CLI. The
     control-insertion ranges are kept disjoint across splits."""
+    # The enrichment-boundary choices are re-centred on HexCoreConfig's default of 4
+    # (they were 1/2/3 when the default was 2 and the core was the reduced dev core).
+    # Splits stay disjoint on insert_fraction, as before; the boundary is a
+    # variability axis and may overlap.
     return (
         SplitPlan("train", sampling.train_samples,
                   insert_fraction_range=(0.0, 0.5),
-                  enrichment_boundary_choices=(1, 2), reflector_ring_choices=(1, 2), seed=1),
+                  enrichment_boundary_choices=(3, 4), reflector_ring_choices=(1, 2), seed=1),
         SplitPlan("val", sampling.val_samples,
                   insert_fraction_range=(0.5, 0.75),
-                  enrichment_boundary_choices=(2,), reflector_ring_choices=(1,), seed=2),
+                  enrichment_boundary_choices=(4,), reflector_ring_choices=(1,), seed=2),
         SplitPlan("test", sampling.test_samples,
                   insert_fraction_range=(0.75, 1.0),
-                  enrichment_boundary_choices=(2, 3), reflector_ring_choices=(2,), seed=3),
+                  enrichment_boundary_choices=(4, 5), reflector_ring_choices=(2,), seed=3),
     )
 
 

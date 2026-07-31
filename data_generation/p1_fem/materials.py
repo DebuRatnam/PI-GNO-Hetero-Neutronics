@@ -118,9 +118,29 @@ N_GROUPS: int = 2
 # (0.60,0.40), correct for a 0.8 MeV cut that this code never actually used.
 CHI = (0.99, 0.01)
 
-# Transverse (axial) leakage buckling Bz^2 [1/cm^2]. Bz^2 = (pi / H_extrap)^2 with an
-# SFR active height ~100 cm plus a few-cm extrapolation length -> ~(pi/104)^2.
-AXIAL_BUCKLING_CM2 = 9.1e-4
+# Transverse (axial) leakage buckling Bz^2 [1/cm^2], Bz^2 = (pi / H_extrap)^2.
+#
+# H_extrap = 135 cm: ~100 cm active height + ~15 cm REFLECTOR SAVINGS PER SIDE. The
+# savings term is the point. This was (pi/104)^2 -- 100 cm active plus only a few cm
+# of extrapolation length -- which is the buckling of a BARE slab. A Natrium-class SFR
+# is not bare axially: it carries an axial reflector and a sodium plenum above the
+# fuel, and reflector savings are large in a fast core precisely because D is large
+# (1.8 in fuel, 4.6 in sodium here), so the flux extrapolates far past the fuel edge.
+# 12-18 cm/side is the usual range for this class; 15 is the middle of it.
+#
+# The bare value cost ~23% in k and made every core state subcritical: at the correct
+# core map (see datagen_config.HexCoreConfig) fresh/rods-out transport gives 1.131,
+# and the bare buckling pulled the diffusion label to 0.942 -- a reactor that cannot
+# be brought critical at any state in the dataset. With reflector savings credited,
+# fresh/rods-out lands at 1.030 and the dataset crosses k=1 as rods insert, which is
+# what a core with a control system is supposed to do.
+#
+# Derived from geometry, NOT fitted to a target k -- landing near 1.03 is the
+# consistency check on the derivation, not its justification. Do not adjust this to
+# move k; if the axial configuration changes, change it there and re-record it.
+# Transport models are axially reflective by design, so this cannot come from them
+# (see CLAUDE.md: axial leakage enters exactly once, in assemble_AF).
+AXIAL_BUCKLING_CM2 = 5.4e-4
 
 
 # --- OpenMC branch table (REQUIRED) ------------------------------------------

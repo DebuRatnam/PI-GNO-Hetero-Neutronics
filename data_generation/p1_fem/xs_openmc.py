@@ -494,7 +494,10 @@ def main():
                     args.reactor, cfg, state, G, boundaries,
                     particles=args.particles, batches=args.batches,
                     inactive=args.inactive, depletion_table=dep,
-                    workdir=os.path.join(args.workdir, state.key),
+                    # Keyed on the reactor as well as the branch: both reactors use
+                    # the same branch keys, so a shared workdir let --resume hand one
+                    # reactor's statepoint to the other.
+                    workdir=os.path.join(args.workdir, args.reactor, state.key),
                     model_kwargs=model_kwargs, resume=args.resume))
                 print(f"    k_eff = {branches[-1]['k_eff']:.5f} "
                       f"+/- {branches[-1]['k_eff_std']:.5f}", flush=True)

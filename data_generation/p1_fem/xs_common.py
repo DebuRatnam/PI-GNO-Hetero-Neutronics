@@ -74,8 +74,28 @@ def n_xs_cols(G: int) -> int:
 #     A cut near the U-238 fast-fission threshold (~0.8-1 MeV) would leave ~10-15%
 #     of the flux in g1 and put the peak, most fission, and most slowing-down all
 #     inside one enormous g2 -- a one-group model with a correction term.
-#   fhr (KP-FHR, THERMAL): split at 0.625 eV, the standard cadmium/thermal cutoff
-#     for a graphite + FLiBe moderated system.
+#   fhr (KP-FHR, THERMAL): split at 0.625 eV. This is the classical cadmium cutoff,
+#     and it is deliberately LOW for this reactor -- state that plainly rather than
+#     citing the LWR convention as if it transferred. The cadmium edge suits water at
+#     ~570 K; KP-FHR is graphite + FLiBe over 823-1100 K, where kT = 0.071-0.095 eV,
+#     so 0.625 eV sits at only ~6.6-8.8 kT and cuts INSIDE the Maxwellian rather than
+#     above its tail (~20-30 kT, i.e. ~1.9-2.5 eV).
+#
+#     The consequence is measured, not hypothetical: in xs_fhr.json the thermal->fast
+#     up-scatter runs at 55-63% of down-scatter for the pebble and coolant materials,
+#     and for graphite_pebble Ss21 is 93% of thermal absorption. A cut near 2 eV would
+#     make cross-group up-scatter nearly vanish.
+#
+#     This is ACCEPTED, not overlooked, because the fhr model does not assume
+#     down-scatter-only: geometry_pebble supplies Ss21 and operators.assemble_AF adds
+#     it to A as a thermal-group removal plus a fast-group in-scatter source, so the
+#     full 2x2 scattering matrix is solved exactly. The up-scatter is transported, not
+#     neglected. (The node XS ROW remains down-scatter-only -- up-scatter is
+#     operator-level; see geometry_pebble's upscatter_note.)
+#
+#     If you ever raise this cut, chi is unaffected: the Watt spectrum below a few eV
+#     is ~1e-10 of births, so materials_fhr.CHI stays (1.0, 0.0). What DOES change is
+#     every collapsed constant, so xs_fhr.json must be regenerated in the same change.
 GROUP_BOUNDARIES_EV = {
     "hex": [1.0e-5, 1.0e5, 2.0e7],
     "fhr": [1.0e-5, 0.625, 2.0e7],

@@ -125,13 +125,31 @@ def _diffusion_state(cfg: DataGenConfig, rod: str, seed: int, *,
 
 
 def _radial_power_diffusion(sample: dict, edges: np.ndarray) -> np.ndarray:
-    """Diffusion power integrated into radial rings (volume weighted)."""
+    """Diffusion power integrated into radial rings, by ELEMENT.
+
+    Integrates over the P1 triangles (area x element-mean power density, binned on
+    the centroid radius) rather than summing lumped NODAL power. The two are not
+    interchangeable here: the CE side is a CylindricalMesh tally, i.e. a continuum
+    integral over each ring, whereas FEM nodes are point samples that cluster at
+    assembly centres and structured-submesh vertices. Ring width (r_max/12 = 14.0 cm
+    for the hex core) is incommensurate with the 18.7 cm assembly pitch, so nodal
+    binning ALIASES against the lattice and produces an alternating-sign ring error
+    (+31%, -17%, +5%, -22%, ... at bu2_T900_rod-out) that is pure sampling beat.
+    Element integration removes it: the same state goes from 40.2% RMS to 6.6%.
+    Do not revert this to nodal binning to "match nodal_volume" -- the quantity being
+    compared is a volume integral, not a nodal quantity.
+    """
     xy = sample["coordinates"]
-    r = np.hypot(xy[:, 0], xy[:, 1])
-    p = np.asarray(sample["power_density"], float) * np.asarray(sample["nodal_volume"], float)
-    idx = np.clip(np.digitize(r, edges) - 1, 0, len(edges) - 2)
+    el = np.asarray(sample["elements"])
+    p = np.asarray(sample["power_density"], float)
+    x, y = xy[el, 0], xy[el, 1]
+    area = 0.5 * np.abs((x[:, 1] - x[:, 0]) * (y[:, 2] - y[:, 0])
+                        - (x[:, 2] - x[:, 0]) * (y[:, 1] - y[:, 0]))
+    p_el = p[el].mean(axis=1) * area
+    r_c = np.hypot(x.mean(axis=1), y.mean(axis=1))
+    idx = np.clip(np.digitize(r_c, edges) - 1, 0, len(edges) - 2)
     out = np.zeros(len(edges) - 1)
-    np.add.at(out, idx, p)
+    np.add.at(out, idx, p_el)
     return out
 
 
@@ -191,20 +209,30 @@ def _run_transport(reactor_type: str, core_cfg, state, edges: np.ndarray, *,
     return float(k.n), float(k.s), radial
 
 
-def _shape_error(a: np.ndarray, b: np.ndarray) -> Tuple[float, float]:
-    """(RMS, max) relative deviation of two radial distributions, each normalized
-    to unit total so only the SHAPE is compared."""
+def _shape_error(a: np.ndarray, b: np.ndarray) -> Tuple[float, float, float]:
+    """(RMS, max, power-weighted RMS) relative deviation of two radial
+    distributions, each normalized to unit total so only the SHAPE is compared.
+
+    The power-weighted RMS weights each ring by its CE fission fraction. Plain RMS
+    gives the nearly empty fuel-edge ring (~1% of core power) the same weight as a
+    ring carrying ~19%, so a large relative error on almost no power can dominate a
+    number that is meant to describe the power shape. Report both: the unweighted
+    value bounds the worst region, the weighted value describes the core.
+    """
     a = np.asarray(a, float)
     b = np.asarray(b, float)
     sa, sb = a.sum(), b.sum()
     if sa <= 0 or sb <= 0:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan")
     a, b = a / sa, b / sb
     keep = b > 1e-6                      # ignore rings with no fission (reflector)
     if not keep.any():
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan")
     rel = (a[keep] - b[keep]) / b[keep]
-    return float(np.sqrt(np.mean(rel ** 2))), float(np.max(np.abs(rel)))
+    w = b[keep]
+    return (float(np.sqrt(np.mean(rel ** 2))),
+            float(np.max(np.abs(rel))),
+            float(np.sqrt(np.sum(w * rel ** 2) / w.sum())))
 
 
 def run(reactor_type: str, burnups: List[float], temperatures: List[float],
@@ -238,10 +266,14 @@ def run(reactor_type: str, burnups: List[float], temperatures: List[float],
                 k_ce, k_std, radial = _run_transport(
                     reactor_type, core_cfg, state, edges, particles=particles,
                     batches=batches, inactive=inactive, depletion_table=dep,
-                    workdir=os.path.join(workdir, "validate_" + state.key),
+                    # Reactor-keyed: both reactors share the branch keys, so a
+                    # common workdir would let one reactor's statepoint be picked
+                    # up for the other (same fix as xs_openmc.py).
+                    workdir=os.path.join(workdir, "validate_" + reactor_type
+                                         + "_" + state.key),
                     axial_cm=axial_cm)
                 p_diff = _radial_power_diffusion(sample, edges)
-                rms, mx = _shape_error(p_diff, radial)
+                rms, mx, rms_w = _shape_error(p_diff, radial)
                 rows.append({
                     "reactor": reactor_type,
                     "burnup_mwd_kg": bu,
@@ -256,6 +288,7 @@ def run(reactor_type: str, burnups: List[float], temperatures: List[float],
                     "axial_debit_pcm": (1.0 / k_diff_ax - 1.0 / k_diff) * 1.0e5,
                     "power_shape_rms_rel": rms,
                     "power_shape_max_rel": mx,
+                    "power_shape_rms_power_weighted": rms_w,
                     "n_nodes": int(sample["material_state"].shape[0]),
                 })
                 r = rows[-1]

@@ -27,6 +27,7 @@ Conventions (recorded in metadata, never changed silently):
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Tuple
 
@@ -155,10 +156,25 @@ class HexCoreConfig:
     gap_cm: float = 0.40              # inter-assembly sodium gap
     hex_subdiv: int = 2               # triangulation refinement per hex (1->6, 2->24 tris)
 
-    # radial ring layout (from the center outward). Default = REDUCED dev core
-    # (fuel_rings=4 -> R=6 -> 127 assemblies). Full Natrium-like: fuel_rings~7,
-    # reflector_rings=2, shield_rings=2.
-    fuel_rings: int = 4
+    # Radial ring layout (from the center outward): fuel_rings occupies rings
+    # 0..fuel_rings-1, then reflector_rings, then shield_rings, then vacuum. Total
+    # lattice is rings 0..R with R = fuel_rings + reflector_rings + shield_rings - 1,
+    # so fuel_rings=7 -> R=8 -> 217 assemblies, of which 127 are central positions
+    # and 13 of those are control (see below) -> 114 fuel assemblies.
+    #
+    # These were fuel_rings=4 (91 assemblies, 24 fuel) until the core map was priced
+    # against OpenMC constants: that is a REDUCED DEV CORE, and it is subcritical for
+    # a reason that is arithmetic, not nuclear. The 13 control assemblies below are a
+    # docketed Natrium count, so at fuel_rings=4 they occupied 13 of 37 central
+    # positions -- 35% of the active region was absorber/sodium-follower instead of
+    # the ~10% a real Natrium core runs. The measured neutron balance at fuel_rings=4
+    # put only 50.6% of losses in fuel absorption, with 13.8% eaten by the B4C shield
+    # (one 18.7 cm SS316H reflector ring is near-transparent to fast neutrons,
+    # Sigma_r1 ~ 0.0063 /cm) and 28.6% to axial leakage. Radial leakage to vacuum was
+    # 0.50%, and the OpenMC leakage fraction 1.4%, so the deficit was never a leakage
+    # problem -- it was too little fuel. Do not "fix" k by touching cross sections or
+    # enrichments; the core map is the physical quantity here.
+    fuel_rings: int = 7
     reflector_rings: int = 1
     shield_rings: int = 1
     # rings <= this = INNER enrichment zone, else OUTER. SFR radial zoning puts the
@@ -166,7 +182,15 @@ class HexCoreConfig:
     # mean free path, steep flux gradient), so the outer zone needs more fissile to
     # flatten the radial power profile. See openmc_models.natrium_model (the two zones
     # are separate enrichments there, and separate tally domains in the branch table).
-    enrichment_boundary_ring: int = 2
+    #
+    # Chosen on RADIAL POWER FLATTENING, which is what zoning is for, not on k. At
+    # fuel_rings=7 this gives a 48/52 inner/outer volume split and the flattest,
+    # only monotone profile (peak/avg 1.674 rods out). Smaller values are degenerate:
+    # boundary=2 leaves 85% of the fuel in the outer zone and raises an interior ring
+    # peak at r ~ 52-67 cm; boundary=5 over-corrects into a centre peak. Balanced
+    # two-zone splits are also what SFRs of this class run (ABTR-class ~44/56 by
+    # assembly count); the Natrium zone split itself is not in the public docket.
+    enrichment_boundary_ring: int = 4
 
     # Reactivity control: 9 primary + 4 secondary control assemblies, B4C absorber.
     # This IS a docketed Natrium number (NRC Fuel and Control Assembly TR SE).
@@ -471,6 +495,21 @@ class DataGenConfig:
             "chi": list(chi_used),
             "spectrum": spectrum,
             "boundary_condition": "vacuum (Marshak partial-current Robin term on boundary edges, alpha=0.5)",
+            # How the third dimension is treated. The transport models that produced
+            # the group constants are axially REFLECTIVE, so axial leakage is absent
+            # from xs_provenance and enters exactly once, here, as Bz^2 in the FEM
+            # removal term (see operators.assemble_AF). A reviewer comparing these
+            # labels against a transport k must either set Bz^2=0 or add the axial
+            # debit back; validate_openmc.py reports both.
+            "axial_leakage": {
+                "model": "2D radial + transverse buckling Bz^2 in the removal term",
+                "buckling_cm2": float(self.physics.axial_buckling),
+                "extrapolated_height_cm": (
+                    None if self.physics.axial_buckling <= 0.0
+                    else math.pi / math.sqrt(self.physics.axial_buckling)),
+                "basis": "active height + axial reflector savings per side "
+                         "(reflected core, not a bare slab)",
+            },
             "material_encoding": "one-hot [" + ", ".join(MATERIAL_ORDER) + "]",
             "graph_construction": "kNN message graph on mesh nodes; no hardcoded neighbors",
             "geometry_model": geometry_model,
