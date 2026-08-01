@@ -69,28 +69,28 @@ within-group (n,2n) production uncredited (~tens of pcm); power uses nuSigma_f w
 nu_bar=1 (relative power, documented); `B4C_CONTROL_B10_ENRICH=1.0` cites gFHR —
 re-verify against Satvat et al. before submission.
 
-### TO RUN NEXT (nothing is running now; machine was on battery overnight)
+### fhr01 REGENERATED AND CHECKED (2026-07-31) — dataset work is DONE
 
-1. **Regenerate fhr01** (~3.5 h, AC power, lid open — coexists with nothing):
+`datasets/fhr01`: 7000 samples (5000/1000/1000), 35 GB, ~3.5 h wall clock,
+**all converged**, max residual 1.2e-8. Manifest check passed:
 
-   ```
-   cd data_generation/p1_fem
-   nohup /opt/homebrew/Caskroom/miniforge/base/envs/openmc-env/bin/python -u \
-       generate.py --reactor fhr --out ../../datasets/fhr01 \
-       --train-samples 5000 --val-samples 1000 --test-samples 1000 \
-       > generate_fhr.log 2>&1 &
-   ```
+| split | n | k range | mean | supercritical |
+|---|---|---|---|---|
+| train | 5000 | 0.98603–1.07622 | 1.0358 | 97.4% |
+| val | 1000 | 0.92887–0.99036 | 0.9555 | 0% |
+| test | 1000 | 0.83311–0.90495 | 0.8632 | 0% |
 
-   Do NOT pin BLAS threads (a pinned run is 4x slower; unpinned it uses ~8 cores).
-   Seeds are deterministic — a restart reproduces byte-identical samples.
-   Afterwards: manifest check (all converged, k ranges per split, disclose the
-   count-disjoint extrapolation).
+Count-disjoint splits landed exactly as designed (train ctrl 0–5 / shut 0–1,
+val 6–7 / 2, test 8–10 / 3, near-uniform within each range). k tracks insertion
+count, so the k head EXTRAPOLATES on val/test — disclose in the paper, same as hex.
 
-2. **G=4 or G=8 branch grid for HEX** (transport, hours; item 3 below — hex, not
+### TO RUN NEXT
+
+1. **G=4 or G=8 branch grid for HEX** (transport, hours; item 3 below — hex, not
    fhr: hex's +6,943 pcm is the G=2 cost worth showing shrink; fhr's +380 pcm shows
    G=2 suffices there). Needs physics-chosen 4-group cuts + re-derived CHI first
    (`xs_common.group_boundaries_ev` falls back to generic log-spacing for G!=2).
-3. **Training + paper** (item 4 below). Note `main.tex` exists in ~/Downloads —
+2. **Training + paper** (item 3 below). Note `main.tex` exists in ~/Downloads —
    user has started the manuscript.
 
 Pipeline design doc (kept current through 2026-07-31, includes both validation
