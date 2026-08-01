@@ -260,11 +260,14 @@ class PebbleCoreConfig:
     Reactivity control follows HERMES AS LICENSED (NRC KP-FHR Core Design and
     Analysis Methodology topical report KP-TR-024-NP Rev 0, ML24095A258, April 2024
     -- earlier revisions ML21272A383 / ML23195A130; element counts from the Hermes
-    PSAR): the reactivity CONTROL system inserts 4 control elements into engineered
+    PSAR): the reactivity CONTROL system inserts control elements into engineered
     channels in the side graphite reflector, and the reactivity SHUTDOWN system
-    inserts 3 shutdown elements DIRECTLY into the packed bed. The gFHR surrogate instead carries 10 reflector rods and no shutdown
-    elements, so the element COUNTS here are Hermes' while the element GEOMETRY
-    (2.6 cm radius B4C, 7.9 cm from bed edge to rod centre) is the published gFHR rod.
+    inserts shutdown elements DIRECTLY into the packed bed. Hermes as licensed has
+    4 control + 3 shutdown in a ~2 m^3 core; this model keeps the Hermes SHUTDOWN
+    count (3) but uses the gFHR CONTROL count (n_control=10 reflector rods), because
+    the bed radius here is gFHR's -- see the n_control comment below. The element
+    GEOMETRY (2.6 cm radius B4C, 7.9 cm from bed edge to rod centre) is the
+    published gFHR rod.
     Each pebble center = one node (4 cm dia, r_peb=2.0). FLiBe fills the bed gaps.
 
     For fast iteration scale the radii down together (a Hermes-sized 2 m^3 core is

@@ -463,6 +463,13 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
                 "3D explicit Serpent 2 Monte Carlo with burnup and no diffusion step. "
                 "Run validate_openmc.py for the resulting reactivity and power-shape "
                 "bias"),
+            "control_insertion": (
+                "binary per element in the dataset (each rod/blade fully in or out; "
+                "the lever is how many and which). Intermediate gray-rod depths are "
+                "supported by the XS API but are step-like for these black thermal "
+                "absorbers (volume-weighted blend -> rod cusping: 1% depth carries "
+                ">50% of element worth), so they are not sampled; the 0/1 endpoints "
+                "are the two measured transport branches"),
         },
     }
 

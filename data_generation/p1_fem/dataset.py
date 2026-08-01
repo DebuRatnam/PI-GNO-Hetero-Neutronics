@@ -1,15 +1,16 @@
 """Orchestrate generation of one sample and a full dataset; serialize to disk.
 
 One sample = one IRREGULAR P1-FEM core state (N varies per sample):
-    material_state[N], coordinates[N,2], cross_sections[N,7],
+    material_state[N], coordinates[N,2], cross_sections[N, n_xs_cols(G)],
     elements[T,3], boundary_edges[B,2], nodal_volume[N],   (FEM mesh topology)
     edge_index[2,E], edge_features[E,8],                    (kNN message graph)
-    A[2N,2N], F[2N,2N], boundary_mask[N], k_eff,
-    flux[N,2], power_density[N], geometry_metadata.
+    A[GN,GN], F[GN,GN], boundary_mask[N], k_eff,
+    flux[N,G], power_density[N], geometry_metadata.
 
-Node feature tensor (canonical 15-dim order, one-hot material) is assembled here for
-direct model consumption. Splits are kept geometrically disjoint by disjoint
-reflector-thickness ranges per split (train/val/test).
+Node feature tensor ([x, y] + one-hot material + XS block + boundary flag; width is
+schema-driven, e.g. 18 for hex at G=2, 17 for fhr) is assembled here for direct
+model consumption. Splits are kept disjoint on the control-insertion axes per split
+(train/val/test).
 
 NOTE: generate.py is the CLI entry point. This module performs NO training and
 is not auto-run; it only builds tensors and writes .npz files.
@@ -94,9 +95,13 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
     # and is used when its length matches n_groups; an explicit multigroup chi in
     # cfg.physics is otherwise preserved.
     #
-    # PREFERRED: the TALLIED core-average fission spectrum at this core's state, which
-    # shifts with burnup (Pu-239 births harder than U-235) and with rod insertion.
-    # geom was built above, so the branch table is already loaded by this point.
+    # PREFERRED: the TALLIED core-average fission spectrum, interpolated on the rod
+    # axis at this core's mean insertion. Burnup and temperature are NOT passed:
+    # burnup varies per node so a single chi query has no one right value, and the
+    # measured chi spread across the whole hex branch grid (bu 2-60, T 630-1000,
+    # rod in/out) is < 1e-3 in chi_1 (< ~10 pcm); fhr chi is (1, 0) on every branch
+    # to 5 decimals. Evaluating at the fresh-burnup end is therefore inside Monte
+    # Carlo noise. geom was built above, so the branch table is loaded by this point.
     mod = _mat_module(cfg.reactor_type)
     chi = (mod.CHI if getattr(mod, "CHI", None) is not None
            and len(mod.CHI) == cfg.physics.n_groups else cfg.physics.chi)
@@ -188,7 +193,7 @@ class SplitPlan:
     """Disjoint configuration generator for one split. Train/val/test draw from
     DISJOINT control-insertion ranges (and enrichment-boundary choices) so the core
     states do not overlap (generalization requirement); insertion pattern, ring
-    counts, and per-assembly XS perturbation still vary within each split."""
+    counts, and per-assembly burnup/temperature draws still vary within each split."""
     name: str
     n_samples: int
     insert_fraction_range: tuple           # disjoint across splits
@@ -224,37 +229,50 @@ DEFAULT_SPLITS = make_split_plans(SamplingConfig())
 
 @dataclass
 class FHRSplitPlan:
-    """Disjoint configuration generator for one KP-FHR split. Train/val/test draw
-    from DISJOINT control/shutdown-insertion ranges so core states do not overlap;
-    the random pebble packing (seed), moderator-pebble fraction, and burnup
-    perturbation still vary within each split."""
+    """Disjoint configuration generator for one KP-FHR split.
+
+    Insertion is BINARY PER ELEMENT: each of the n_control reflector rods and
+    n_shutdown bed blades is fully IN or fully OUT, and the reactivity lever is HOW
+    MANY are in (drawn from this split's count range) and WHICH ones (random
+    pattern -> asymmetric/stuck-rod states arise naturally). There are no
+    intermediate gray-rod depths in the fhr dataset: the axially-averaged XS blend
+    is volume-weighted, and for a B4C element in a THERMAL spectrum even a few
+    percent of absorber is already optically black over the element footprint, so
+    worth(d) is a step function of depth (measured: d=0.01 carries 53-64% of full
+    worth -- the classic rod-cusping error). Endpoint states are exactly the two
+    MEASURED rod branches, so binary insertion has no such pathology. The hex core
+    keeps continuous depths: its fast-spectrum absorber is not black and its worth
+    curve is verified near-linear (d=0.01 -> 1.3% of full worth).
+
+    Splits are DISJOINT on both inserted-element counts, so core states do not
+    overlap; the random pebble packing (seed), insertion pattern, moderator-pebble
+    fraction, and per-pebble burnup/temperature draws still vary within each split.
+    """
     name: str
     n_samples: int
-    control_insert_range: tuple            # disjoint across splits
-    shutdown_insert_range: tuple
+    control_count_range: tuple             # (lo, hi) inserted CONTROL rods, inclusive
+    shutdown_count_range: tuple            # (lo, hi) inserted SHUTDOWN blades, inclusive
     graphite_pebble_range: tuple           # fuel:moderator ratio (reactivity lever)
     seed: int
-    # Fraction of samples whose 4 control elements insert to INDEPENDENT per-element
-    # depths (asymmetric tilt / stuck-rod states) rather than a single ganged depth.
-    # KP-FHR runs banked/symmetric in normal operation, so keep this a minority.
-    control_independent_frac: float = 0.20
 
 
 def make_split_plans_fhr(sampling: SamplingConfig) -> tuple:
-    """KP-FHR split plans, sized by `sampling`, with disjoint insertion ranges. The
-    moderator-pebble fraction varies within each split (a real reactivity lever)."""
+    """KP-FHR split plans, sized by `sampling`, disjoint on the inserted-element
+    counts of BOTH control families (k tracks insertion, so like the hex splits the
+    k_eff head extrapolates on val/test -- disclose it). The moderator-pebble
+    fraction varies within each split (a real reactivity lever)."""
     gpr = (0.08, 0.22)
     return (
         FHRSplitPlan("train", sampling.train_samples,
-                     control_insert_range=(0.0, 0.5),
-                     shutdown_insert_range=(0.0, 0.34),
+                     control_count_range=(0, 5),
+                     shutdown_count_range=(0, 1),
                      graphite_pebble_range=gpr, seed=11),
         FHRSplitPlan("val", sampling.val_samples,
-                     control_insert_range=(0.5, 0.75),
-                     shutdown_insert_range=(0.34, 0.67),
+                     control_count_range=(6, 7),
+                     shutdown_count_range=(2, 2),
                      graphite_pebble_range=gpr, seed=12),
         FHRSplitPlan("test", sampling.test_samples,
-                     control_insert_range=(0.75, 1.0),
-                     shutdown_insert_range=(0.67, 1.0),
+                     control_count_range=(8, 10),
+                     shutdown_count_range=(3, 3),
                      graphite_pebble_range=gpr, seed=13),
     )

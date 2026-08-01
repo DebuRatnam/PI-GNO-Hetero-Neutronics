@@ -10,11 +10,13 @@ Physical model (2D radial, homogenized-assembly diffusion, DIF3D-style):
   - The thin inter-assembly SODIUM GAPS are stitched with a Delaunay triangulation
     over the hex-boundary nodes plus explicit gap nodes (`coolant`), so the gap is a
     real physical region, not a blurred gradient.
-  - Control insertion toggles absorber vs sodium-follower cross sections; a small
-    per-assembly XS perturbation stands in for burnup/temperature spread.
+  - Control insertion toggles absorber vs sodium-follower cross sections; burnup
+    and temperature are drawn per assembly and looked up on the OpenMC branch
+    table (no ad-hoc XS perturbation).
 
-Domain boundary (for the Marshak vacuum BC) is the CONVEX HULL of the node cloud --
-robust to the mixed structured/Delaunay interior.
+Domain boundary (for the Marshak vacuum BC) is the set of outer hex edges with no
+neighbouring assembly -- the true (non-convex) lattice perimeter, found per edge by
+probing for a neighbour center across the edge midpoint.
 
 One NODE = one mesh vertex. N varies per sample. Both groups are FAST.
 """
@@ -41,7 +43,7 @@ class CoreGeometry:
     material_state: np.ndarray   # [N] int material id per node
     coordinates: np.ndarray      # [N, 2] node (x, y) in cm
     boundary_mask: np.ndarray    # [N] bool, True on domain boundary nodes
-    cross_sections: np.ndarray   # [N, 7] XS (D1,D2,Sr1,Sr2,Ss12,nuSf1,nuSf2)
+    cross_sections: np.ndarray   # [N, n_xs_cols(G)]; at G=2: (D1,D2,Sr1,Sr2,Ss12,nuSf1,nuSf2)
     control_rod_cells: np.ndarray  # [Ncr] node ids of control-assembly nodes
     elements: np.ndarray         # [T, 3] triangle -> node indices (P1 elements)
     boundary_edges: np.ndarray   # [B, 2] mesh edges on the domain boundary

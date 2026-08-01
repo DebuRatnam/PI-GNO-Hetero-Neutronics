@@ -87,11 +87,15 @@ def n_xs_cols(G: int) -> int:
 #     make cross-group up-scatter nearly vanish.
 #
 #     This is ACCEPTED, not overlooked, because the fhr model does not assume
-#     down-scatter-only: geometry_pebble supplies Ss21 and operators.assemble_AF adds
-#     it to A as a thermal-group removal plus a fast-group in-scatter source, so the
-#     full 2x2 scattering matrix is solved exactly. The up-scatter is transported, not
-#     neglected. (The node XS ROW remains down-scatter-only -- up-scatter is
-#     operator-level; see geometry_pebble's upscatter_note.)
+#     down-scatter-only: the tallied Sigma_r already counts Ss21 as thermal
+#     out-scatter (xs_openmc: removal = absorption + ALL out-scatter, down and up),
+#     and geometry_pebble supplies Ss21 separately so operators.assemble_AF can add
+#     the matching fast-group IN-scatter source to A. The full 2x2 scattering matrix
+#     is solved exactly; the up-scatter is transported, not neglected. (The removal
+#     side lives in Sr ONLY -- assemble_AF must not add Ss21 to removal again; that
+#     double-count once made every fhr state subcritical by ~21,000 pcm. The node XS
+#     ROW remains down-scatter-only -- up-scatter is operator-level; see
+#     geometry_pebble's upscatter_note.)
 #
 #     If you ever raise this cut, chi is unaffected: the Watt spectrum below a few eV
 #     is ~1e-10 of births, so materials_fhr.CHI stays (1.0, 0.0). What DOES change is
@@ -192,22 +196,6 @@ def multigroupxs_from_dict(d: dict) -> "MultiGroupXS":
                         scatter=tuple(d["scatter"]), nuSf=tuple(d["nuSf"]))
 
 
-def load_cached_library(path: str):
-    """Load an OpenMC-generated XS cache (see xs_openmc.py) if present.
-
-    Returns (library_dict{name -> MultiGroupXS}, blob_meta) or (None, None) when the
-    file is absent -- so the material modules fall back to their committed defaults.
-    """
-    import os
-    import json
-    if not os.path.exists(path):
-        return None, None
-    with open(path) as f:
-        blob = json.load(f)
-    lib = {name: multigroupxs_from_dict(d) for name, d in blob["materials"].items()}
-    return lib, blob
-
-
 def blend_xs(follower: MultiGroupXS, absorber: MultiGroupXS, frac: float
              ) -> MultiGroupXS:
     """Gray-rod blend of a withdrawn (follower) and inserted (absorber) control XS.
@@ -242,17 +230,4 @@ def blend_xs(follower: MultiGroupXS, absorber: MultiGroupXS, frac: float
         Sr=lin(follower.Sr, absorber.Sr),
         scatter=lin(follower.scatter, absorber.scatter),
         nuSf=lin(follower.nuSf, absorber.nuSf),
-    )
-
-
-def two_group(D1, D2, Sigma_r1, Sigma_r2, Sigma_s12, nuSigma_f1, nuSigma_f2
-              ) -> MultiGroupXS:
-    """Backward-compatible constructor for the original 7-scalar two-group data.
-
-    Produces a MultiGroupXS whose as_row() is exactly
-    [D1, D2, Sr1, Sr2, Ss12, nuSf1, nuSf2].
-    """
-    return MultiGroupXS(
-        D=(D1, D2), Sr=(Sigma_r1, Sigma_r2),
-        scatter=(Sigma_s12,), nuSf=(nuSigma_f1, nuSigma_f2),
     )

@@ -157,6 +157,17 @@ def xs_for(material: str, *, inserted: bool = True,
     only when `insert_frac` is None. Non-control materials ignore both and instead
     see `core_rod_frac`.
 
+    WARNING -- intermediate depths are STEP-LIKE in this reactor. The blend is
+    volume-weighted in XS, and a B4C element in a THERMAL spectrum is optically
+    black at even a few percent absorber fraction (measured on the assembled core:
+    insert_frac=0.01 carries 53-64% of the full element worth -- the classic
+    rod-cusping error of volume-homogenizing a black absorber). The fhr DATASET
+    therefore uses BINARY per-element insertion only (generate.py /
+    dataset.FHRSplitPlan); the 0/1 endpoints short-circuit to the two measured rod
+    branches and carry no blend error. The hex core's fast-spectrum absorber is not
+    black and its worth curve is near-linear, so continuous depths remain valid
+    there.
+
     Raises KeyError if the table has no record for `material`.
     """
     frac = (1.0 if inserted else 0.0) if insert_frac is None else float(insert_frac)
@@ -191,9 +202,11 @@ def xs_for_id(material_id: int, *, inserted: bool = True,
 # (S(alpha,beta)) effect and therefore cannot be a temperature-independent constant.
 # The former hand-tuned UPSCATTER_21 table was removed with the rest of the fallback.
 #
-# Applied at the OPERATOR level (assembled into A: raises thermal removal + adds an
-# in-scatter source to the fast group) rather than stored in the per-node XS row,
-# which stays down-scatter-only (schema unchanged).
+# Applied at the OPERATOR level (assembled into A as the fast-group IN-scatter
+# source only -- the thermal-removal side of Ss21 is already inside the tallied
+# Sigma_r, which counts ALL out-scatter; adding it again double-counts thermal loss)
+# rather than stored in the per-node XS row, which stays down-scatter-only (schema
+# unchanged).
 
 
 def up_scatter_for(material: str, *, insert_frac: float = 1.0,

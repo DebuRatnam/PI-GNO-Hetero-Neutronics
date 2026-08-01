@@ -108,15 +108,23 @@ def assemble_AF(geom: CoreGeometry, physics: PhysicsConfig
     for idx, (gf, gt) in enumerate(scatter_pairs(G)):
         # neutrons scattering DOWN from gf appear as a source in group gt
         Ablk[gt][gf] = -sp.diags(Ssc[:, idx] * V)
-    # optional thermal UP-scatter (FHR, operator-level): Ss_{g2->g1}. Raises the
-    # thermal-group removal (out-scatter) and adds an in-scatter source to the fast
-    # group. G=2 only (the up-scatter data is two-group); None (hex) -> unchanged.
+    # optional thermal UP-scatter (FHR, operator-level): Ss_{g2->g1}, added as an
+    # in-scatter SOURCE in the fast-group equation. G=2 only (the up-scatter data is
+    # two-group); None (hex) -> unchanged.
+    #
+    # The thermal-group REMOVAL is deliberately not touched here. xs_openmc builds
+    # Sigma_r = Sigma_a + ALL out-scatter, down AND up (xs_openmc._collapse:
+    # `out_scatter = Smat.sum(axis=1) - diag(Smat)`), so Sr[thermal] already carries
+    # Ss21 as out-scatter. Adding it again double-counts thermal loss -- and it is not
+    # a small error in this reactor: for graphite_pebble Ss21 is ~93% of thermal
+    # absorption, so the thermal removal came out ~1.9x too large and the fhr core was
+    # subcritical at every state (k <= 0.843 rods-out) against a CE transport k of
+    # 1.335 at the same branch, a ~21,000 pcm bias.
     Ssup = getattr(geom, "upscatter", None)
     if Ssup is not None and np.any(Ssup):
         if G != 2:
             raise ValueError("operator-level up-scatter is implemented for G=2 only")
         up = np.asarray(Ssup, dtype=float) * V
-        Ablk[1][1] = Ablk[1][1] + sp.diags(up)              # thermal removal += out-scatter
         src = -sp.diags(up)                                 # in-scatter source into fast group
         Ablk[0][1] = src if Ablk[0][1] is None else (Ablk[0][1] + src)
     for i in range(G):

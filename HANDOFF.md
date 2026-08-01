@@ -1,11 +1,100 @@
-# PI-GNO handoff — 2026-07-30, hex data generation COMPLETE
+# PI-GNO handoff — 2026-07-31, fhr VALIDATED; regenerate fhr01 (one command)
 
 Read `CLAUDE.md` first; it is authoritative on physics conventions. This file records
 what changed, what exists, and what is left.
 
-**The pipeline is code-complete and the hex reactor is done.** The previous handoff's
-open problem ("the hex core is subcritical everywhere") is RESOLVED — root cause found,
-fixed, and verified against continuous-energy transport. Do not redesign anything.
+**The pipeline is code-complete, the hex reactor is done, and the fhr reactor is now
+CE-validated.** Do not redesign anything.
+
+---
+
+## SESSION 2026-07-30/31 — what changed since the section below was written
+
+### Bug fixed: fhr thermal removal was DOUBLE-COUNTED (operators.py)
+
+`xs_openmc._homogenize` builds `Sigma_r = Sigma_a + ALL out-scatter (down AND up)`,
+but `operators.assemble_AF` ALSO added the tallied Ss21 to the thermal-group removal
+before adding the fast-group in-scatter source. For `graphite_pebble`, Ss21 is ~93% of
+Sr2, so thermal removal ran ~1.9x too large and **every fhr state was subcritical by
+~21,000 pcm** (k=1.046 at a state CE transport puts at 1.335). Fix: the up-scatter
+block now contributes ONLY the fast-group in-scatter source (`Ablk[0][1]`); the
+removal side already lives in Sr. hex is bit-identical (upscatter=None path).
+Verified post-fix: same state k=1.3448 vs CE 1.33656 (+459 pcm).
+
+### fhr validation vs CE transport — DONE (`validation_fhr.csv`)
+
+6 states (bu 2/95/190 x T950 x rod out/in), 10000p x 200b, run AFTER the fix:
+
+  - reactivity bias: **mean +380 pcm, max |1017| pcm** (vs hex's +6,943 mean —
+    two-group diffusion is adequate for the thermal core, coarse for the fast one;
+    this IS the G-dependence argument for the paper)
+  - rod worth: **+3.2 to +3.8%** vs CE at every burnup (hex: −8 to −9%)
+  - power shape RMS: mean 8.4%, max 10.6% (rodded states worst)
+  - axial debit: mean +4,095 pcm, reported separately as designed
+
+### Found and fixed: fhr gray-rod blend is STEP-LIKE (rod cusping)
+
+Measured on the assembled core: **insert_frac=0.01 carries 53–64% of full element
+worth** for both fhr control rods and shutdown blades. Cause: the blend is
+volume-weighted in XS, and B4C in a THERMAL spectrum is optically black at a few
+percent absorber fraction — the classic rod-cusping error. This made a first fhr01
+build (7000 samples, continuous depths) entirely subcritical (k 0.837–0.998) with an
+insertion axis that did not mean depth; that build was DELETED.
+
+**Decision (user-approved): fhr insertion is BINARY PER ELEMENT.** Each of the 10
+control rods / 3 shutdown blades is fully in or out; the reactivity lever is how many
+and which. 0/1 endpoints short-circuit `blend_xs` to the two MEASURED rod branches, so
+no blend error. Splits are disjoint on inserted COUNTS (train ctrl 0–5 / shut 0–1;
+val 6–7 / 2; test 8–10 / 3) — k tracks insertion, so the k head extrapolates on
+val/test exactly like hex: disclose it. Smoke-tested: train k ~1.04–1.07 (straddles
+criticality once burnup/moderation vary), val ~0.94–0.96, test ~0.85–0.87, monotone
+in count. **hex keeps continuous depths** — its fast-spectrum absorber is not black;
+measured worth curve is near-linear (d=0.01 -> 1.3% of full).
+
+Where this is written down: `dataset.FHRSplitPlan` + `make_split_plans_fhr`,
+`generate.py` (binary pattern draw), `materials_fhr.xs_for` (WARNING block),
+`geometry_pebble` metadata `modelling_assumptions["control_insertion"]`.
+
+### Physics audit for publication (no behavior changes beyond the two fixes)
+
+Full pass over operators/solver/power/validate/xs_*/materials*/geometry*/dataset/
+graph_build. Sound throughout; fixed only reviewer-facing rot: stale docstrings
+claiming the old up-scatter treatment, "convex hull" boundary (it is the true hex
+perimeter), "15-dim" node features, "4 control elements", a chi comment overclaiming
+burnup dependence (measured chi spread across the whole hex branch grid < 1e-3 in
+chi_1, < ~10 pcm — dataset.py now states this), and deleted dead `load_cached_library`
+(described the forbidden hand-library fallback) + `two_group` from xs_common.
+Known-and-disclosed (in code comments, not bugs): nu-scatter in removal leaves
+within-group (n,2n) production uncredited (~tens of pcm); power uses nuSigma_f with
+nu_bar=1 (relative power, documented); `B4C_CONTROL_B10_ENRICH=1.0` cites gFHR —
+re-verify against Satvat et al. before submission.
+
+### TO RUN NEXT (nothing is running now; machine was on battery overnight)
+
+1. **Regenerate fhr01** (~3.5 h, AC power, lid open — coexists with nothing):
+
+   ```
+   cd data_generation/p1_fem
+   nohup /opt/homebrew/Caskroom/miniforge/base/envs/openmc-env/bin/python -u \
+       generate.py --reactor fhr --out ../../datasets/fhr01 \
+       --train-samples 5000 --val-samples 1000 --test-samples 1000 \
+       > generate_fhr.log 2>&1 &
+   ```
+
+   Do NOT pin BLAS threads (a pinned run is 4x slower; unpinned it uses ~8 cores).
+   Seeds are deterministic — a restart reproduces byte-identical samples.
+   Afterwards: manifest check (all converged, k ranges per split, disclose the
+   count-disjoint extrapolation).
+
+2. **G=4 or G=8 branch grid for HEX** (transport, hours; item 3 below — hex, not
+   fhr: hex's +6,943 pcm is the G=2 cost worth showing shrink; fhr's +380 pcm shows
+   G=2 suffices there). Needs physics-chosen 4-group cuts + re-derived CHI first
+   (`xs_common.group_boundaries_ev` falls back to generic log-spacing for G!=2).
+3. **Training + paper** (item 4 below). Note `main.tex` exists in ~/Downloads —
+   user has started the manuscript.
+
+Pipeline design doc (kept current through 2026-07-31, includes both validation
+tables): https://claude.ai/code/artifact/e7cb323e-bfe3-402b-81b6-4eb0e2cd3cac
 
 ---
 
