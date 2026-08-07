@@ -32,14 +32,16 @@ class PIGNOBench(BenchModel):
         super().__init__(layout)
         cfg = ModelConfig.from_metadata(
             meta, latent_dim=latent_dim, n_mp_layers=n_mp_layers,
-            message_hidden=message_hidden, norm=norm, k_pool=k_pool)
+            message_hidden=message_hidden, norm=norm, k_pool=k_pool,
+            aggregation=aggregation)
         self.cfg = cfg
         self.use_cuda_scatter = use_cuda_scatter
         self.aggregation = aggregation
         self.node_lift = NodeLift(cfg.node_in_dim, cfg.latent_dim, cfg.message_hidden)
         self.edge_lift = EdgeLift(cfg.edge_in_dim, cfg.latent_dim, cfg.message_hidden)
         self.mp = MessagePassingStack(cfg.n_mp_layers, cfg.latent_dim,
-                                      cfg.latent_dim, cfg.message_hidden, cfg.norm)
+                                      cfg.latent_dim, cfg.message_hidden, cfg.norm,
+                                      cfg.aggregation)
         self.flux_head = FluxHead(cfg.latent_dim, cfg.message_hidden, cfg.n_groups)
         self.k_head = KHead(cfg.latent_dim, cfg.message_hidden, cfg.k_pool)
 
@@ -49,7 +51,8 @@ class PIGNOBench(BenchModel):
         e = self.edge_lift(norm.edge.transform(batch.edge_feats))
         h = self.mp(h, batch.edge_index, e,
                     use_cuda_scatter=self.use_cuda_scatter,
-                    batch=batch.batch, n_graphs=batch.n_graphs)
+                    batch=batch.batch, n_graphs=batch.n_graphs,
+                    node_weight=batch.nodal_volume)
         return (self.flux_head(h),
                 self.k_head(h, batch.batch, batch.n_graphs))
 

@@ -27,6 +27,13 @@ class ModelConfig:
     n_groups: int = 2
     k_pool: str = "mean"       # "mean" | "sum" | "attention"
     activation: str = "silu"   # message-passing nonlinearity (required: SiLU)
+    # Message aggregation: "sum" is unweighted scatter-add (a GNN aggregation);
+    # "volume" weights each message by the SOURCE node's nodal_volume and
+    # normalizes, making it a quadrature estimate of the kernel integral -- the
+    # GNO form. "volume_raw" is the unnormalized Nystrom sum, kept for the
+    # ablation that shows why normalization is needed under a fixed-k graph.
+    # Default stays "sum" so existing behaviour is unchanged unless asked for.
+    aggregation: str = "sum"   # "sum" | "volume" | "volume_raw"
 
     @classmethod
     def from_metadata(cls, meta: dict, **overrides) -> "ModelConfig":
