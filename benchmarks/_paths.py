@@ -15,8 +15,11 @@ import sys
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SRC = os.path.join(_ROOT, "src")
 DATAGEN = os.path.join(_ROOT, "data_generation", "p1_fem")
+BENCH = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = _ROOT
 
-for _p in (SRC, DATAGEN):
+# BENCH is included so `models.pigno_wrap` resolves whether harness.py is run as
+# a script (sys.path[0] is already benchmarks/) or imported from elsewhere.
+for _p in (SRC, DATAGEN, BENCH):
     if _p not in sys.path:
         sys.path.insert(0, _p)
