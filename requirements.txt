@@ -30,6 +30,10 @@ matplotlib>=3.7
 #
 # nvidia-physicsnemo[cu12]>=2.0
 #
+# PhysicsNeMo's MeshGraphNet takes topology as a torch_geometric.data.Data, so
+# the MGN baseline additionally needs:
+# torch_geometric>=2.5
+#
 # DeepONet is NOT in physicsnemo core -- it lives in physicsnemo-sym, a much
 # heavier package whose constraint/geometry stack we do not use. benchmarks/
 # models/deeponet.py implements it directly instead.

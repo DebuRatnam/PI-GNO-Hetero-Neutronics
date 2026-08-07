@@ -78,6 +78,13 @@ class RunConfig:
     cache_root: Optional[str] = None
     out_root: str = "results"
     eval_splits: List[str] = field(default_factory=lambda: ["val", "test"])
+    # Fixed physical domain (x0, x1, y0, y1) for the grid-based baselines. Left
+    # None it is derived ONCE from the train split and written back here, so
+    # val/test are probed with exactly the sensors/grid the model was trained
+    # on. Deriving it per sample would hand FNO and DeepONet a geometry
+    # adaptation they do not actually have.
+    domain: Optional[List[float]] = None
+    domain_probe: int = 128
 
     def loss_cfg(self) -> LossConfig:
         return LossConfig(lambda_k=self.lambda_k, lambda_pde=self.lambda_pde,
@@ -207,7 +214,16 @@ def train(cfg: RunConfig):
         print(f"normalization: fitted on {len(train_ds)} train samples "
               f"in {time.perf_counter() - t0:.1f}s -> {norm_path}")
 
-    model = build_model(cfg.model, meta, **cfg.hparams).to(device)
+    # --- fixed domain for the grid-based baselines --------------------------
+    # Derived from TRAIN only and frozen into the config. Graph models ignore it.
+    if cfg.domain is None:
+        from sensors import domain_from_dataset
+        cfg.domain = list(domain_from_dataset(train_ds, cfg.domain_probe))
+        print(f"domain (from {min(cfg.domain_probe, len(train_ds))} train "
+              f"samples): {[round(v, 2) for v in cfg.domain]}")
+
+    model = build_model(cfg.model, meta, domain=tuple(cfg.domain),
+                        **cfg.hparams).to(device)
     prov = _provenance(cfg, model, meta)
     print(f"model={cfg.model}  params={model.n_params():,}  device={device}  "
           f"reactor={meta.get('reactor_type')}  N_train={len(train_ds)}")
