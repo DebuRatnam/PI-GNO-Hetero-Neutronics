@@ -36,7 +36,8 @@ class MPLayer(nn.Module):
         self.norm = make_norm(norm, latent_dim)
 
     def forward(self, h: torch.Tensor, edge_index: torch.Tensor,
-                e_latent: torch.Tensor, *, use_cuda_scatter: bool = True
+                e_latent: torch.Tensor, *, use_cuda_scatter: bool = True,
+                batch: torch.Tensor = None, n_graphs: int = None
                 ) -> torch.Tensor:
         src, dst = edge_index[0], edge_index[1]
         h_src, h_dst = h[src], h[dst]
@@ -44,7 +45,9 @@ class MPLayer(nn.Module):
         agg = scatter_add_messages(m, dst, h.shape[0],
                                    use_cuda_scatter=use_cuda_scatter)   # [N, latent]
         h = h + self.update(agg)                                        # residual
-        return self.norm(h)
+        # `batch` matters only for GraphNorm, whose statistics are per graph;
+        # LayerNorm/Identity ignore it (see norm._IgnoreBatch).
+        return self.norm(h, batch, n_graphs)
 
 
 class MessagePassingStack(nn.Module):
@@ -55,7 +58,9 @@ class MessagePassingStack(nn.Module):
             MPLayer(latent_dim, edge_dim, hidden, norm) for _ in range(n_layers)
         ])
 
-    def forward(self, h, edge_index, e_latent, *, use_cuda_scatter: bool = True):
+    def forward(self, h, edge_index, e_latent, *, use_cuda_scatter: bool = True,
+                batch=None, n_graphs=None):
         for layer in self.layers:
-            h = layer(h, edge_index, e_latent, use_cuda_scatter=use_cuda_scatter)
+            h = layer(h, edge_index, e_latent, use_cuda_scatter=use_cuda_scatter,
+                      batch=batch, n_graphs=n_graphs)
         return h

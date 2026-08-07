@@ -54,13 +54,19 @@ class PIGNO(nn.Module):
 
     def forward(self, *, node_feats_norm, edge_feats_norm, raw_node_feats,
                 edge_index, flux_scaler, k_mean, k_std,
-                use_cuda_scatter: bool = True) -> PIGNOOutput:
+                use_cuda_scatter: bool = True,
+                batch=None, n_graphs=None) -> PIGNOOutput:
+        """`batch` [N] long / `n_graphs` are the batched-graph descriptors from
+        benchmarks.batching.collate_graphs. Left None (the default) the model
+        behaves exactly as before on a single graph and k is a 0-d scalar; given
+        them, k is [n_graphs] and pooling respects graph boundaries."""
         h = self.node_lift(node_feats_norm)
         e = self.edge_lift(edge_feats_norm)
-        h = self.mp(h, edge_index, e, use_cuda_scatter=use_cuda_scatter)
+        h = self.mp(h, edge_index, e, use_cuda_scatter=use_cuda_scatter,
+                    batch=batch, n_graphs=n_graphs)
 
-        flux_norm = self.flux_head(h)               # [N,2]
-        k_norm = self.k_head(h)                     # scalar
+        flux_norm = self.flux_head(h)               # [N,G]
+        k_norm = self.k_head(h, batch, n_graphs)    # scalar, or [n_graphs]
 
         flux_phys = flux_scaler.inverse(flux_norm)
         k_phys = k_norm * k_std + k_mean

@@ -170,6 +170,19 @@ class NormBundle:
             "k_mean": self.k_mean, "k_std": self.k_std,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "NormBundle":
+        """Rebuild from to_dict(). Needed to evaluate a checkpoint later: the
+        transform applied at test time must be the one FITTED ON TRAIN, so the
+        stats have to survive the process that fitted them."""
+        f = lambda v: torch.as_tensor(v, dtype=torch.float32)
+        return cls(
+            node=Standardizer(mean=f(d["node_mean"]), std=f(d["node_std"])),
+            edge=Standardizer(mean=f(d["edge_mean"]), std=f(d["edge_std"])),
+            flux=FluxScaler(scale=f(d["flux_scale"])),
+            k_mean=float(d["k_mean"]), k_std=float(d["k_std"]),
+        )
+
 
 def fit_normalization(node_feats, edge_feats, flux, k_values,
                       node_passthrough=None) -> NormBundle:

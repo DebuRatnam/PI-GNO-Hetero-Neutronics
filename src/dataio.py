@@ -25,15 +25,30 @@ from dataset import load_sample  # noqa: E402
 
 @dataclass
 class Sample:
-    node_feats: torch.Tensor     # [N, 18] raw (physical; 8-way one-hot material)
+    node_feats: torch.Tensor     # [N, D] raw (physical; one-hot material block)
     edge_index: torch.Tensor     # [2, E] long (kNN message graph)
     edge_feats: torch.Tensor     # [E, 8] raw
-    flux: torch.Tensor           # [N, 2] physical reference
+    flux: torch.Tensor           # [N, G] physical reference
     k_eff: torch.Tensor          # scalar
     power: torch.Tensor          # [N] reference
     boundary_mask: torch.Tensor  # [N] bool
-    A: torch.Tensor              # sparse [2N, 2N]
-    F: torch.Tensor              # sparse [2N, 2N]
+    A: torch.Tensor              # sparse [GN, GN]
+    F: torch.Tensor              # sparse [GN, GN]
+    # --- fields the benchmark suite needs; unused by the original train.py ----
+    coords: torch.Tensor         # [N, 2] physical node coordinates
+    nodal_volume: torch.Tensor   # [N] lumped nodal volume (the GNO quadrature
+                                 #     weight; tiles the core area)
+    material_state: torch.Tensor # [N] long material id (integer, not one-hot)
+    meta: dict                   # geometry_metadata (schema: n_groups,
+                                 #     n_materials, node_feature_order, ...)
+
+    @property
+    def n_nodes(self) -> int:
+        return self.node_feats.shape[0]
+
+    @property
+    def n_groups(self) -> int:
+        return self.flux.shape[1]
 
 
 def load_torch_sample(path: str, device="cpu", dtype=torch.float32) -> Sample:
@@ -49,6 +64,10 @@ def load_torch_sample(path: str, device="cpu", dtype=torch.float32) -> Sample:
         boundary_mask=t(s["boundary_mask"], torch.bool),
         A=scipy_csr_to_torch(s["A"], device, dtype),
         F=scipy_csr_to_torch(s["F"], device, dtype),
+        coords=t(s["coordinates"]),
+        nodal_volume=t(s["nodal_volume"]),
+        material_state=t(s["material_state"], torch.long),
+        meta=s["geometry_metadata"],
     )
 
 
