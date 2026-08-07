@@ -161,26 +161,107 @@ def _pick_control(roles, hx: HexCoreConfig):
 
 # --- per-hex structured submesh ----------------------------------------------
 
-def _hex_submesh(center: np.ndarray, Rc: float, assembly_mat: int):
+def _hex_ring_points(center: np.ndarray, radius: float, k: int) -> np.ndarray:
+    """The 6k points of hexagonal ring `k` at circumradius `radius`.
+
+    Walks corner 0 -> corner 1 -> ... -> corner 5 and places k evenly spaced
+    points along each side (the corner itself plus k-1 interior points), so ring
+    k has 6k nodes and index c*k is corner c. That indexing is what makes the
+    strip triangulation and the per-side boundary walk below index-arithmetic
+    rather than a geometric search.
+    """
+    corners = _hex_corners(center[0], center[1], radius)
+    pts = np.empty((6 * k, 2))
+    for c in range(6):
+        a, b = corners[c], corners[(c + 1) % 6]
+        for j in range(k):
+            pts[c * k + j] = a + (b - a) * (j / k)
+    return pts
+
+
+def _hex_submesh(center: np.ndarray, Rc: float, assembly_mat: int,
+                 subdiv: int = 0):
     """Identical structured submesh for one hexagon.
-    Returns local node coords [13,2], node materials [13], triangles [18,3] (local),
-    and the 6 outer-corner local indices. Layout: center(0), inner ring 1..6 @
-    Ri (assembly material), outer ring 7..12 @ Rc (duct)."""
+
+    Returns (coords [n,2], materials [n], triangles [t,3] local, outer_idx,
+    side_nodes) where `outer_idx` lists the outermost ring's local indices (used
+    to stitch the sodium gaps) and `side_nodes` gives, for each of the 6 hexagon
+    sides, the ordered local indices along that side including both corners.
+
+    RESOLUTION. `subdiv` is the mesh-refinement level, and it is the ONLY thing
+    that changes between the levels of the resolution-transfer study -- the
+    physical geometry, the materials and every cross section are untouched.
+
+      subdiv = 0  the original 13-node / 18-triangle mesh, reproduced exactly.
+                  Kept as a distinct branch (rather than a special case of the
+                  general scheme) so previously generated datasets regenerate
+                  bit-for-bit.
+
+      subdiv = s  concentric-ring refinement with R = 2s rings, ring k carrying
+                  6k nodes: 1 + 3R(R+1) nodes and 6R^2 triangles per assembly.
+                  s = 1, 2, 3 gives 19 / 61 / 127 nodes and 24 / 96 / 216
+                  triangles.
+
+    Rings 1..s fill the assembly region out to Ri and rings s+1..2s fill the duct
+    annulus out to Rc, so the assembly/duct material interface lands EXACTLY on
+    ring s at every level. That is why refinement is by concentric rings rather
+    than by midpoint subdivision of the existing triangles: a midpoint between an
+    assembly node and a duct node has no defensible material, and assigning it
+    one would move a material interface as a side effect of refining the mesh.
+    """
     Ri = Rc * (1.0 - DUCT_RING_FRAC)
-    inner = _hex_corners(center[0], center[1], Ri)
-    outer = _hex_corners(center[0], center[1], Rc)
-    coords = np.concatenate([center[None, :], inner, outer], axis=0)  # [13,2]
-    mats = np.array([assembly_mat] + [assembly_mat] * 6 + [MATERIAL_IDS["duct"]] * 6,
-                    dtype=np.int64)
+
+    if subdiv <= 0:
+        inner = _hex_corners(center[0], center[1], Ri)
+        outer = _hex_corners(center[0], center[1], Rc)
+        coords = np.concatenate([center[None, :], inner, outer], axis=0)  # [13,2]
+        mats = np.array([assembly_mat] + [assembly_mat] * 6
+                        + [MATERIAL_IDS["duct"]] * 6, dtype=np.int64)
+        tris = []
+        for k in range(6):
+            a_in, b_in = 1 + k, 1 + (k + 1) % 6      # inner ring
+            a_out, b_out = 7 + k, 7 + (k + 1) % 6     # outer ring
+            tris.append([0, a_in, b_in])              # interior fan (assembly)
+            tris.append([a_in, a_out, b_out])         # duct annulus
+            tris.append([a_in, b_out, b_in])
+        outer_idx = list(range(7, 13))
+        side_nodes = [[7 + c, 7 + (c + 1) % 6] for c in range(6)]
+        return coords, mats, np.array(tris, dtype=np.int64), outer_idx, side_nodes
+
+    s = int(subdiv)
+    R = 2 * s
+    radius = lambda k: (Ri * k / s) if k <= s else (Ri + (Rc - Ri) * (k - s) / s)
+
+    coords = [center[None, :]]
+    mats = [np.array([assembly_mat], dtype=np.int64)]
+    ring_off = [0]                       # local index of ring k's first node
+    for k in range(1, R + 1):
+        coords.append(_hex_ring_points(center, radius(k), k))
+        mats.append(np.full(6 * k, assembly_mat if k <= s
+                            else MATERIAL_IDS["duct"], dtype=np.int64))
+        ring_off.append(ring_off[-1] + (1 if k == 1 else 6 * (k - 1)))
+    coords = np.concatenate(coords, axis=0)
+    mats = np.concatenate(mats)
+
+    def node(k: int, i: int) -> int:
+        """local index of node i (mod 6k) on ring k; ring 0 is the centre."""
+        return 0 if k == 0 else ring_off[k] + (i % (6 * k))
+
     tris = []
-    for k in range(6):
-        a_in, b_in = 1 + k, 1 + (k + 1) % 6      # inner ring
-        a_out, b_out = 7 + k, 7 + (k + 1) % 6     # outer ring
-        tris.append([0, a_in, b_in])              # interior fan (assembly)
-        tris.append([a_in, a_out, b_out])         # duct annulus
-        tris.append([a_in, b_out, b_in])
-    outer_idx = list(range(7, 13))
-    return coords, mats, np.array(tris, dtype=np.int64), outer_idx
+    for c in range(6):                                   # ring 1: fan from centre
+        tris.append([0, node(1, c), node(1, c + 1)])
+    for k in range(2, R + 1):                            # strip between k-1 and k
+        for c in range(6):
+            A = [node(k - 1, c * (k - 1) + j) for j in range(k)]      # k points
+            B = [node(k, c * k + j) for j in range(k + 1)]            # k+1 points
+            for j in range(k):
+                tris.append([A[j], B[j], B[j + 1]])
+            for j in range(k - 1):
+                tris.append([A[j], B[j + 1], A[j + 1]])
+
+    outer_idx = [node(R, i) for i in range(6 * R)]
+    side_nodes = [[node(R, c * R + j) for j in range(R + 1)] for c in range(6)]
+    return coords, mats, np.array(tris, dtype=np.int64), outer_idx, side_nodes
 
 
 # --- core assembly -----------------------------------------------------------
@@ -190,9 +271,15 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
               shield_rings: Optional[int] = None,
               enrichment_boundary: Optional[int] = None,
               insert_fraction: Optional[float] = None,
+              hex_subdiv: Optional[int] = None,
               rng: Optional[np.random.Generator] = None) -> CoreGeometry:
     """Build one hex-lattice core. Ring counts / enrichment boundary / control
-    insertion can be overridden per sample for dataset variability."""
+    insertion can be overridden per sample for dataset variability.
+
+    `hex_subdiv` is the MESH RESOLUTION level (see _hex_submesh). It changes only
+    the discretization: hold the rng and every other argument fixed and you get
+    the same physical core at a different mesh density, which is what the
+    resolution-transfer study requires. Defaults to HexCoreConfig.hex_subdiv."""
     rng = rng or np.random.default_rng()
     reflector_rings = hx.reflector_rings if reflector_rings is None else reflector_rings
     shield_rings = hx.shield_rings if shield_rings is None else shield_rings
@@ -220,18 +307,23 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
     depth_by_cell = {tuple(c): float(d) for c, d in zip(ctrl_cells, depths)}
 
     # build per-hex submeshes
+    subdiv = int(getattr(hx, "hex_subdiv", 0) if hex_subdiv is None else hex_subdiv)
     coords_parts, mat_parts, elem_parts = [], [], []
     node_hex, node_offset = [], 0
     hex_centers, hex_outer_nodes, hex_meta = [], [], []
+    hex_side_nodes = []
     for (q, r) in sorted(roles.keys()):
         cx, cy = _axial_to_xy(q, r, hx.pitch_cm)
         center = np.array([cx, cy])
-        c, m, tris, outer_idx = _hex_submesh(center, Rc, roles[(q, r)])
+        c, m, tris, outer_idx, side_nodes = _hex_submesh(
+            center, Rc, roles[(q, r)], subdiv)
         coords_parts.append(c)
         mat_parts.append(m)
         elem_parts.append(tris + node_offset)
         node_hex.append(np.full(c.shape[0], len(hex_centers), dtype=np.int64))
         hex_outer_nodes.append([i + node_offset for i in outer_idx])
+        hex_side_nodes.append([[i + node_offset for i in side]
+                               for side in side_nodes])
         hex_centers.append(center)
         hex_meta.append({"qr": (q, r), "mat": int(roles[(q, r)]),
                          "depth": depth_by_cell.get((q, r), 0.0)})
@@ -322,15 +414,20 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
     # --- boundary = outer hex edges with no neighbouring assembly ---
     # For each hexagon edge, the neighbour (if any) sits at 2*mid - center. If no
     # assembly is there, that edge is on the domain perimeter (Marshak vacuum BC).
+    # Under refinement a hexagon side carries several sub-edges, so the
+    # neighbour probe is done once PER SIDE using the side's two corners. It
+    # cannot be done per sub-edge: reflecting the centre through a sub-edge
+    # midpoint does not land on the neighbouring assembly centre, only
+    # reflecting through the FULL side midpoint does.
     be = []
     for i in range(len(hex_centers)):
-        onodes = hex_outer_nodes[i]                 # corners 0..5, order = _hex_corners
-        for k in range(6):
-            a, b = onodes[k], onodes[(k + 1) % 6]
-            mid = 0.5 * (coords[a] + coords[b])
+        for side in hex_side_nodes[i]:
+            a0, a1 = side[0], side[-1]              # the side's two corners
+            mid = 0.5 * (coords[a0] + coords[a1])
             guess = 2.0 * mid - hex_centers[i]      # where a neighbour center would be
             if ctree.query(guess)[0] > hx.pitch_cm * 0.3:   # no assembly -> perimeter
-                be.append((int(a), int(b)))
+                for a, b in zip(side[:-1], side[1:]):
+                    be.append((int(a), int(b)))
     boundary_edges = np.asarray(be, dtype=np.int64) if be else np.zeros((0, 2), np.int64)
     boundary_mask = np.zeros(coords.shape[0], dtype=bool)
     if boundary_edges.size:
@@ -348,6 +445,10 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
         "n_nodes": int(coords.shape[0]),
         "n_elements": int(elements.shape[0]),
         "n_assemblies": len(hex_centers),
+        # mesh refinement level: the resolution-study axis. Recorded per sample so
+        # a level can never be inferred from N alone (N also moves with
+        # reflector_rings).
+        "hex_subdiv": subdiv,
         "pitch_cm": hx.pitch_cm,
         "total_rings": total_rings,
         "reflector_rings": reflector_rings,

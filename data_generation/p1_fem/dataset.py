@@ -85,7 +85,10 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
             reflector_rings=knobs.get("reflector_rings"),
             shield_rings=knobs.get("shield_rings"),
             enrichment_boundary=knobs.get("enrichment_boundary"),
-            insert_fraction=knobs.get("insert_fraction"), rng=rng)
+            insert_fraction=knobs.get("insert_fraction"),
+            # mesh refinement level: discretization only, no physics change.
+            # None -> HexCoreConfig.hex_subdiv (0, the original submesh).
+            hex_subdiv=knobs.get("hex_subdiv"), rng=rng)
 
     # Per-reactor FIXED nuclear data: fission spectrum chi + axial-leakage buckling
     # come from the material module (fast core vs thermal pebble bed differ). These are

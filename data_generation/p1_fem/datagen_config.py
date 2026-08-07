@@ -154,7 +154,17 @@ class HexCoreConfig:
     pitch_cm: float = 18.7            # assembly center-to-center (representative)
     duct_wall_cm: float = 0.37        # HT9 wall thickness (provenance/homogenization)
     gap_cm: float = 0.40              # inter-assembly sodium gap
-    hex_subdiv: int = 2               # triangulation refinement per hex (1->6, 2->24 tris)
+    # Mesh refinement level per hexagon (geometry._hex_submesh). This is the ONLY
+    # knob that changes discretization without changing physics, and it is the
+    # axis of the resolution-transfer study.
+    #   0 -> the original 13-node / 18-triangle submesh (DEFAULT: every existing
+    #        dataset was generated at this level and must keep regenerating
+    #        bit-for-bit, so do not change this default)
+    #   s -> R = 2s concentric rings, 1 + 3R(R+1) nodes and 6R^2 triangles per
+    #        assembly: s = 1, 2, 3 gives 19 / 61 / 127 nodes.
+    # The field was previously declared as 2 but never read anywhere; reading it
+    # at the old default would have silently re-meshed the existing datasets.
+    hex_subdiv: int = 0
 
     # Radial ring layout (from the center outward): fuel_rings occupies rings
     # 0..fuel_rings-1, then reflector_rings, then shield_rings, then vacuum. Total
