@@ -29,7 +29,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.spatial import Delaunay
 
-from datagen_config import HexCoreConfig
+from datagen_config import HexCoreConfig, robin_alpha_from_albedo
 from materials import MATERIAL_IDS, ID_TO_MATERIAL, branch, xs_for_id
 from xs_branch import check_axis_coverage
 from xs_common import n_xs_cols
@@ -54,6 +54,11 @@ class CoreGeometry:
     # Optional per-node thermal up-scatter Ss_{g2->g1} [N] (FHR only). Applied at the
     # operator level in assemble_AF; None (hex) -> pure down-scatter, unchanged.
     upscatter: Optional[np.ndarray] = None
+    # Optional PER-BOUNDARY-EDGE Marshak coefficient [B], alpha = (1-beta)/(2(1+beta))
+    # for albedo beta. None -> PhysicsConfig.vacuum_robin_alpha (0.5, pure vacuum)
+    # on every edge, which is the original behaviour. This is the axis of the
+    # boundary-condition transfer study.
+    boundary_alpha: Optional[np.ndarray] = None
 
     @property
     def n_nodes(self) -> int:
@@ -272,6 +277,7 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
               enrichment_boundary: Optional[int] = None,
               insert_fraction: Optional[float] = None,
               hex_subdiv: Optional[int] = None,
+              boundary_albedo: Optional[float] = None,
               rng: Optional[np.random.Generator] = None) -> CoreGeometry:
     """Build one hex-lattice core. Ring counts / enrichment boundary / control
     insertion can be overridden per sample for dataset variability.
@@ -433,6 +439,13 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
     if boundary_edges.size:
         boundary_mask[np.unique(boundary_edges)] = True
 
+    # Per-edge Marshak coefficient. None -> pure vacuum, left as None so
+    # assemble_AF takes the original scalar path and existing data is unchanged.
+    boundary_alpha = None
+    if boundary_albedo is not None and boundary_edges.size:
+        boundary_alpha = np.full(boundary_edges.shape[0],
+                                 float(robin_alpha_from_albedo(boundary_albedo)))
+
     nodal_volume = nodal_volumes(coords, elements, areas)
     rod_cells = np.where(np.isin(material_state,
                                  [MATERIAL_IDS["primary_control"],
@@ -461,6 +474,8 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
         "mean_control_depth": float(depths.mean()) if len(depths) else 0.0,
         "control_depths": [float(d) for d in depths],
         "n_control_inserted": int((depths > 0.0).sum()),
+        "boundary_albedo": (None if boundary_albedo is None
+                            else float(boundary_albedo)),
         "core_area_cm2": float(nodal_volume.sum()),
         "material_counts": counts,
     }
@@ -477,4 +492,5 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
         mesh=None,
         layout_name=layout_name,
         assembly_metadata=assembly_metadata,
+        boundary_alpha=boundary_alpha,
     )

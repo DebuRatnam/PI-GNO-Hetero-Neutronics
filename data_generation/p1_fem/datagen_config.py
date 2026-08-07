@@ -51,6 +51,26 @@ VACUUM_EXTRAP_FACTOR = 0.7104
 # (src lambda_bc = 0). Stored in metadata.
 VACUUM_ROBIN_ALPHA = 0.5
 
+
+def robin_alpha_from_albedo(beta):
+    """Marshak Robin coefficient for an albedo boundary.
+
+        J- = beta J+   ->   alpha = (1 - beta) / (2 (1 + beta))
+
+    beta = 0 returns exactly VACUUM_ROBIN_ALPHA (0.5), so vacuum is the beta = 0
+    member of this family rather than a separate code path -- which is what lets
+    every previously generated sample regenerate bit-for-bit. beta -> 1 returns
+    alpha -> 0, a reflective boundary with no leakage.
+
+    This is the axis of the boundary-condition transfer study: a model trained on
+    one range of beta is asked to predict on a disjoint range.
+    """
+    import numpy as _np
+    b = _np.asarray(beta, dtype=float)
+    if _np.any(b < 0.0) or _np.any(b >= 1.0):
+        raise ValueError(f"albedo beta must lie in [0, 1), got {beta}")
+    return (1.0 - b) / (2.0 * (1.0 + b))
+
 # Power normalization: power_density = kappa * (kappa_f1*Sigma_f1*phi1 + kappa_f2*Sigma_f2*phi2)
 # We fold kappa (energy/fission) and use nuSigma_f as a proxy when Sigma_f is not
 # tracked separately; documented in power.py. Stored in metadata.

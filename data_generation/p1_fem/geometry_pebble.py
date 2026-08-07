@@ -70,7 +70,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 from scipy.spatial import Delaunay, cKDTree
 
-from datagen_config import PebbleCoreConfig
+from datagen_config import PebbleCoreConfig, robin_alpha_from_albedo
 from geometry import CoreGeometry, triangle_areas, nodal_volumes
 from materials_fhr import MATERIAL_IDS, branch, xs_for_id, up_scatter_for_id
 from xs_branch import check_axis_coverage
@@ -228,6 +228,7 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
                      insert_control: float = 1.0, insert_shutdown: float = 0.0,
                      graphite_pebble_frac: Optional[float] = None,
                      burnup_field: Optional[np.ndarray] = None,
+                     boundary_albedo: Optional[float] = None,
                      rng: Optional[np.random.Generator] = None) -> CoreGeometry:
     """Build one frozen KP-FHR pebble-bed sample -> CoreGeometry.
 
@@ -478,4 +479,9 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         cross_sections=xs, control_rod_cells=control_rod_cells, elements=elements,
         boundary_edges=boundary_edges, nodal_volume=V, mesh=None, upscatter=upscatter,
         layout_name=layout_name, assembly_metadata=meta,
+        # None -> pure vacuum (unchanged). A float albedo becomes a per-edge
+        # Marshak coefficient; see datagen_config.robin_alpha_from_albedo.
+        boundary_alpha=(None if boundary_albedo is None or not boundary_edges.size
+                        else np.full(boundary_edges.shape[0],
+                                     float(robin_alpha_from_albedo(boundary_albedo)))),
     )

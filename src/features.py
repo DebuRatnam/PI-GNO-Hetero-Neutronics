@@ -35,10 +35,20 @@ class NodeLayout:
     and group count (no hardcoding). Use NodeLayout.from_metadata(meta)."""
     n_materials: int
     n_groups: int
+    # Trailing scalar columns appended after boundary_flag (currently only
+    # `bc_alpha`, present on boundary-condition-study datasets). Derived from the
+    # dataset's own node_feature_order rather than assumed, so a dataset that
+    # carries an extra column and one that does not both load correctly.
+    n_extra: int = 0
 
     @classmethod
     def from_metadata(cls, meta: dict) -> "NodeLayout":
-        return cls(int(meta["n_materials"]), int(meta["n_groups"]))
+        n_materials = int(meta["n_materials"])
+        n_groups = int(meta["n_groups"])
+        base = 2 + n_materials + _n_xs_cols(n_groups) + 1
+        order = meta.get("node_feature_order")
+        n_extra = max(0, len(order) - base) if order else 0
+        return cls(n_materials, n_groups, n_extra)
 
     @property
     def xs_width(self) -> int:
@@ -46,7 +56,15 @@ class NodeLayout:
 
     @property
     def total_dim(self) -> int:
-        return 2 + self.n_materials + self.xs_width + 1
+        return 2 + self.n_materials + self.xs_width + 1 + self.n_extra
+
+    @property
+    def extra_cols(self) -> list:
+        """Column indices of the trailing extra features (e.g. bc_alpha). These
+        are CONTINUOUS, so they are z-scored like the coordinates and cross
+        sections -- they are deliberately NOT in passthrough_cols."""
+        start = self.boundary_col + 1
+        return list(range(start, start + self.n_extra))
 
     @property
     def material_onehot_cols(self) -> list:

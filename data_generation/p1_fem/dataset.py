@@ -42,20 +42,52 @@ def _mat_module(reactor_type: str):
     return _mat_fhr if reactor_type == "fhr" else _mat_hex
 
 
-def node_features(sample: dict) -> np.ndarray:
+def node_features(sample: dict, bc_alpha: Optional[np.ndarray] = None
+                  ) -> np.ndarray:
     """Assemble the canonical node feature matrix in documented order:
-    [x, y, <one-hot material>, <G-group XS>, boundary_flag].
+    [x, y, <one-hot material>, <G-group XS>, boundary_flag] (+ bc_alpha).
 
     Material is ONE-HOT (width = the active reactor's material count) so the model
     sees no ordinal material column. The XS block width follows n_groups. The exact
     order is recorded in geometry_metadata['node_feature_order'].
+
+    `bc_alpha` [N], when given, is APPENDED as a trailing column: the Marshak
+    coefficient of the boundary edges touching each node, 0 in the interior. It
+    is only present for boundary-condition-study datasets, so previously
+    generated datasets keep their 18-dim (hex) / 17-dim (fhr) width and the
+    consumer reads the width from node_feature_order rather than assuming it.
+
+    Without this column no model can SEE the boundary condition -- boundary_flag
+    is binary and says only "this node is on the perimeter", not what happens
+    there -- so a BC-transfer experiment would be measuring nothing.
     """
     rt = str(sample["geometry_metadata"].get("reactor_type", "hex"))
     onehot = _mat_module(rt).one_hot_batch(sample["material_state"])
     coords = sample["coordinates"]
     xs = sample["cross_sections"]                       # [N, n_xs_cols(G)]
     bflag = sample["boundary_mask"].astype(np.float64)[:, None]
-    return np.concatenate([coords, onehot, xs, bflag], axis=1)
+    blocks = [coords, onehot, xs, bflag]
+    if bc_alpha is not None:
+        blocks.append(np.asarray(bc_alpha, dtype=np.float64)[:, None])
+    return np.concatenate(blocks, axis=1)
+
+
+def nodal_bc_alpha(geom) -> Optional[np.ndarray]:
+    """Per-NODE Marshak coefficient from the per-EDGE one: the mean alpha over the
+    boundary edges touching a node, 0 in the interior. Returns None when the
+    geometry carries no per-edge alpha (pure vacuum), so the feature is omitted
+    entirely rather than added as a constant column."""
+    alpha = getattr(geom, "boundary_alpha", None)
+    if alpha is None:
+        return None
+    n = geom.coordinates.shape[0]
+    be = geom.boundary_edges
+    acc = np.zeros(n)
+    cnt = np.zeros(n)
+    for col in (0, 1):
+        np.add.at(acc, be[:, col], np.asarray(alpha, dtype=float))
+        np.add.at(cnt, be[:, col], 1.0)
+    return np.divide(acc, cnt, out=np.zeros(n), where=cnt > 0)
 
 
 def make_sample(cfg: DataGenConfig = DEFAULT, *,
@@ -78,7 +110,8 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
             cfg.pebblecore, layout_name=layout_name,
             insert_control=knobs.get("insert_control", 1.0),
             insert_shutdown=knobs.get("insert_shutdown", 0.0),
-            graphite_pebble_frac=knobs.get("graphite_pebble_frac"), rng=rng)
+            graphite_pebble_frac=knobs.get("graphite_pebble_frac"),
+            boundary_albedo=knobs.get("boundary_albedo"), rng=rng)
     else:
         geom = make_core(
             cfg.hexcore, layout_name=layout_name,
@@ -88,7 +121,10 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
             insert_fraction=knobs.get("insert_fraction"),
             # mesh refinement level: discretization only, no physics change.
             # None -> HexCoreConfig.hex_subdiv (0, the original submesh).
-            hex_subdiv=knobs.get("hex_subdiv"), rng=rng)
+            hex_subdiv=knobs.get("hex_subdiv"),
+            # boundary condition: None -> pure vacuum (unchanged); a float is an
+            # albedo beta in [0,1) converted to a per-edge Marshak coefficient
+            boundary_albedo=knobs.get("boundary_albedo"), rng=rng)
 
     # Per-reactor FIXED nuclear data: fission spectrum chi + axial-leakage buckling
     # come from the material module (fast core vs thermal pebble bed differ). These are
@@ -152,7 +188,14 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
             "solver_iters": int(sol.iters),
         },
     }
-    sample["node_features"] = node_features(sample)
+    # bc_alpha is appended only when the geometry actually carries a non-vacuum
+    # boundary; the metadata's node_feature_order is extended to match so the
+    # width stays self-describing and old datasets keep loading unchanged.
+    bc_alpha = nodal_bc_alpha(geom)
+    sample["node_features"] = node_features(sample, bc_alpha)
+    if bc_alpha is not None:
+        sample["geometry_metadata"]["node_feature_order"] = list(
+            sample["geometry_metadata"]["node_feature_order"]) + ["bc_alpha"]
     if validate:
         validate_sample(sample, residual_tol=cfg.solver.residual_tol)
     return sample
