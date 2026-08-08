@@ -30,6 +30,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
@@ -331,6 +332,15 @@ def train(cfg: RunConfig):
 
 
 def main():
+    # Line-buffer stdout. Python block-buffers when stdout is a file rather than
+    # a terminal, so a redirected run (which is every long run) shows NOTHING
+    # until the process exits -- a multi-hour training job looks identical to a
+    # hang, and killing it to check is how you lose the run. Cheap insurance.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--config")
     ap.add_argument("--model")

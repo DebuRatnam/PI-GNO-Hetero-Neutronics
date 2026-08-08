@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from dataclasses import replace, asdict
 from typing import Dict, List
 
@@ -229,6 +230,13 @@ def _transfer_eval(exp, cell, seeds, target_data, out_root, **kw):
 
 
 def main():
+    # See harness.main: block-buffered stdout makes a redirected long run look
+    # like a hang. Line-buffer so progress is visible as it happens.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--run")
