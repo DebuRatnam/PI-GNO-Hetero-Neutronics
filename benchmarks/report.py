@@ -211,6 +211,61 @@ def interpolation_floor_table(data_roots, sides=(64, 96, 128, 192),
     return "\n".join(out) + "\n"
 
 
+def invariance_tables(results_root: str) -> str:
+    """Fold any discretization-probe results into the main report.
+
+    invariance.py writes <run_dir>/invariance.json. Collecting them here puts the
+    GNO-vs-GNN comparison in one table, which is the point: the claim is only
+    legible when the models are read side by side against the SAME reference
+    baseline, and against each other's aggregation setting.
+    """
+    rows = []
+    for p in glob.glob(os.path.join(results_root, "**", "invariance.json"),
+                       recursive=True):
+        try:
+            with open(p) as f:
+                d = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        run = os.path.dirname(p)
+        cfg_path = os.path.join(run, "config.json")
+        model, agg = os.path.basename(os.path.dirname(run)), None
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                c = json.load(f).get("config", {})
+            model = c.get("model", model)
+            agg = (c.get("hparams") or {}).get("aggregation")
+        rows.append((model, agg, d))
+    if not rows:
+        return ""
+
+    meshes = [m for m in rows[0][2]["meshes"] if m != rows[0][2]["reference_mesh"]]
+    out = ["### Discretization probe — invariance",
+           "",
+           "Model prediction on one mesh, interpolated onto another mesh of the "
+           "SAME physical core, versus the prediction there. Lower is more "
+           "discretization-invariant. No reference solution is involved.",
+           "",
+           "`FEM reference` is the discretization's OWN mesh-dependence — the "
+           "number to beat. Read it together with the accuracy table: a model "
+           "that is invariant because it is uniformly wrong scores well here and "
+           "badly there.",
+           "",
+           "| model | aggregation | " + " | ".join(meshes) + " |",
+           "|" + "---|" * (len(meshes) + 2)]
+
+    ref = rows[0][2]["invariance_reference"]
+    out.append("| *FEM reference* | — | " + " | ".join(
+        f"{ref.get(m, {}).get('flux_rel_l2_g1', float('nan')):.4f}"
+        for m in meshes) + " |")
+    for model, agg, d in sorted(rows, key=lambda r: (r[0], str(r[1]))):
+        mo = d["invariance_model"]
+        out.append(f"| {model} | {agg or '—'} | " + " | ".join(
+            f"{mo.get(m, {}).get('flux_rel_l2_g1', float('nan')):.4f}"
+            for m in meshes) + " |")
+    return "\n".join(out) + "\n"
+
+
 def plots(runs, out_dir: str):
     try:
         import matplotlib
@@ -261,6 +316,7 @@ def main():
     parts = ["# PI-GNO benchmark results", "", BANNER, ""]
     for exp in sorted({r["exp"] for r in runs if r["exp"]}):
         parts += [table_for_experiment(runs, exp), transfer_table(runs, exp)]
+    parts.append(invariance_tables(a.results))
     parts.append(cost_table(runs))
     if not a.no_floor:
         parts.append(interpolation_floor_table(a.floor_data))

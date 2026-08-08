@@ -248,6 +248,11 @@ def main():
     txt = format_report(res)
     print()
     print(txt)
+    # Default the output beside the checkpoint it describes: report.py collects
+    # <run_dir>/invariance.json to build the cross-model comparison table, so
+    # writing elsewhere silently leaves the probe out of the final report.
+    if a.out is None and a.run:
+        a.out = os.path.join(a.run, "invariance.md")
     if a.out:
         os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
         with open(a.out, "w") as f:
