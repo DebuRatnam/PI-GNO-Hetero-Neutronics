@@ -61,6 +61,22 @@ def draw_config(rng: np.random.Generator, split: str) -> dict:
     }
 
 
+def parse_level(tok):
+    """'2' -> (name 'L2', spec 2);  'mixed:3,1,3' -> ('Lmixed', (3,1,3)).
+
+    The non-uniform level is the sharpest discriminator in the probe: uniform
+    refinement changes density everywhere at once, which a message-passing model
+    can partly absorb by rescaling, whereas a mixed mesh makes density vary
+    WITHIN one graph and an unweighted scatter-add has no way to compensate."""
+    tok = str(tok)
+    if tok.startswith("mixed:"):
+        parts = tuple(int(v) for v in tok.split(":", 1)[1].split(","))
+        if len(parts) != 3:
+            raise ValueError(f"mixed level needs SIN,SOUT,D; got {tok!r}")
+        return f"Lmixed{parts[0]}_{parts[1]}_{parts[2]}", parts
+    return f"L{int(tok)}", int(tok)
+
+
 def generate(out_root: str, levels, counts: dict, validate: bool = True):
     manifest = []
     for split, n in counts.items():
@@ -72,8 +88,9 @@ def generate(out_root: str, levels, counts: dict, validate: bool = True):
             # ONE seed per configuration, replayed at every level -> identical
             # physics, different mesh
             core_seed = SPLIT_SEED[split] * 1_000_000 + ci
-            for s in levels:
-                d = os.path.join(out_root, f"L{s}", split)
+            for tok in levels:
+                name, s = parse_level(tok)
+                d = os.path.join(out_root, name, split)
                 os.makedirs(d, exist_ok=True)
                 path = os.path.join(d, f"sample_{ci:05d}.npz")
                 sample = make_sample(
@@ -82,7 +99,8 @@ def generate(out_root: str, levels, counts: dict, validate: bool = True):
                 save_sample(sample, path)
                 meta = sample["geometry_metadata"]
                 manifest.append({
-                    "split": split, "level": s, "config_id": ci,
+                    "split": split, "level": name, "level_spec": s,
+                    "config_id": ci,
                     "path": path, "core_seed": core_seed,
                     "k_eff": float(sample["k_eff"]),
                     "n_nodes": int(meta["n_nodes"]),
@@ -90,7 +108,7 @@ def generate(out_root: str, levels, counts: dict, validate: bool = True):
                     "converged": bool(meta.get("solver_converged", False)),
                     **knobs,
                 })
-                print(f"[{split} L{s}] {ci:05d}  k={float(sample['k_eff']):.6f}  "
+                print(f"[{split} {name}] {ci:05d}  k={float(sample['k_eff']):.6f}  "
                       f"N={meta['n_nodes']}", flush=True)
 
     with open(os.path.join(out_root, "manifest.json"), "w") as f:
@@ -106,12 +124,20 @@ def _report_convergence(manifest, levels):
     by_cfg = {}
     for m in manifest:
         by_cfg.setdefault((m["split"], m["config_id"]), {})[m["level"]] = m["k_eff"]
-    levels = sorted(levels)
+    # Only UNIFORM levels form a refinement sequence. A mixed mesh is not a point
+    # on the h -> 0 path, so chaining it into the convergence report would print
+    # a meaningless "dk" between two meshes that are not successive refinements.
+    parsed = [parse_level(t) for t in levels]
+    levels = [name for name, spec in parsed if not isinstance(spec, tuple)]
+    skipped = [name for name, spec in parsed if isinstance(spec, tuple)]
+    if skipped:
+        print(f"\n(non-uniform meshes excluded from the convergence chain: "
+              f"{', '.join(skipped)})")
     print("\nk_eff convergence (mean over paired configs):")
     for a, b in zip(levels[:-1], levels[1:]):
         d = [abs(v[b] - v[a]) * 1e5 for v in by_cfg.values() if a in v and b in v]
         if d:
-            print(f"  L{a} -> L{b}: mean |dk| = {np.mean(d):8.1f} pcm  "
+            print(f"  {a} -> {b}: mean |dk| = {np.mean(d):8.1f} pcm  "
                   f"(max {np.max(d):8.1f})")
 
 
@@ -123,12 +149,12 @@ def verify_pairing(out_root: str, levels, split: str = "val", n: int = 3):
     different reactors and the study is meaningless.
     """
     from dataset import load_sample
-    levels = sorted(levels)
+    levels = [parse_level(t)[0] for t in levels]
     ok = True
     for ci in range(n):
         metas = []
         for s in levels:
-            p = os.path.join(out_root, f"L{s}", split, f"sample_{ci:05d}.npz")
+            p = os.path.join(out_root, s, split, f"sample_{ci:05d}.npz")
             if not os.path.exists(p):
                 return None
             metas.append(load_sample(p)["geometry_metadata"])
@@ -150,7 +176,11 @@ def verify_pairing(out_root: str, levels, split: str = "val", n: int = 3):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
-    ap.add_argument("--levels", type=int, nargs="+", default=[1, 2, 3])
+    ap.add_argument("--levels", nargs="+", default=["1", "2", "3"],
+                    help="mesh levels. An int is uniform refinement; "
+                         "'mixed:SIN,SOUT,D' is a non-uniform mesh (inner "
+                         "assemblies within ring distance D at SIN, rest at "
+                         "SOUT); e.g. --levels 0 1 2 3 mixed:3,1,3 6")
     ap.add_argument("--train", type=int, default=400)
     ap.add_argument("--val", type=int, default=100)
     ap.add_argument("--eval", type=int, default=300, help="test-split configs")

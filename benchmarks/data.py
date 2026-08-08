@@ -38,7 +38,7 @@ from features import (NormBundle, Standardizer, FluxScaler, NodeLayout,
 
 from batching import collate_graphs
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2   # v2 adds `elements` (P1 triangles) for cross-mesh interpolation
 
 
 # --------------------------------------------------------------------------- #
@@ -73,6 +73,7 @@ def _encode(npz_path: str, dtype=torch.float32) -> dict:
         "coords": t(s["coordinates"]),
         "nodal_volume": t(s["nodal_volume"]),
         "material_state": t(s["material_state"], torch.int32),
+        "elements": t(s["elements"], torch.int32),
         "A_idx": t(np.stack([A.row, A.col]), torch.int32),
         "A_val": t(A.data),
         "F_idx": t(np.stack([F.row, F.col]), torch.int32),
@@ -99,6 +100,7 @@ def _decode(d: dict, device="cpu", dtype=torch.float32) -> Sample:
         coords=d["coords"].to(dtype),
         nodal_volume=d["nodal_volume"].to(dtype),
         material_state=d["material_state"].to(torch.long),
+        elements=d["elements"].to(torch.long),
         meta=d["meta"],
     )
 

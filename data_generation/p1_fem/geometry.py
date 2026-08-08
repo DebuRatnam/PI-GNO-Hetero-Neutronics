@@ -269,6 +269,35 @@ def _hex_submesh(center: np.ndarray, Rc: float, assembly_mat: int,
     return coords, mats, np.array(tris, dtype=np.int64), outer_idx, side_nodes
 
 
+def _subdiv_resolver(spec):
+    """Turn a hex_subdiv spec into a callable (q, r, ring_distance) -> level.
+
+    Accepted forms:
+      int                       uniform refinement, every assembly at that level
+      (s_inner, s_outer, d)     NON-UNIFORM: assemblies within ring distance d get
+                                s_inner, the rest get s_outer
+      callable                  arbitrary, called as f(q, r, d)
+
+    The non-uniform form exists for the discretization probe. Uniform refinement
+    changes node density everywhere at once, which a message-passing model can
+    partly absorb by rescaling; a MIXED mesh makes density vary WITHIN a single
+    graph, which is where an unweighted scatter-add and a volume-weighted
+    quadrature genuinely diverge -- the aggregate magnitude of the former tracks
+    local node count, and the core no longer has one local node count.
+    """
+    if callable(spec):
+        return spec
+    if isinstance(spec, (tuple, list)):
+        if len(spec) != 3:
+            raise ValueError(
+                "non-uniform hex_subdiv must be (s_inner, s_outer, ring_boundary), "
+                f"got {spec!r}")
+        s_in, s_out, d_bnd = int(spec[0]), int(spec[1]), int(spec[2])
+        return lambda q, r, d: (s_in if d <= d_bnd else s_out)
+    s = int(spec)
+    return lambda q, r, d: s
+
+
 # --- core assembly -----------------------------------------------------------
 
 def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
@@ -313,14 +342,19 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
     depth_by_cell = {tuple(c): float(d) for c, d in zip(ctrl_cells, depths)}
 
     # build per-hex submeshes
-    subdiv = int(getattr(hx, "hex_subdiv", 0) if hex_subdiv is None else hex_subdiv)
+    subdiv_spec = getattr(hx, "hex_subdiv", 0) if hex_subdiv is None else hex_subdiv
+    subdiv_of = _subdiv_resolver(subdiv_spec)
     coords_parts, mat_parts, elem_parts = [], [], []
     node_hex, node_offset = [], 0
     hex_centers, hex_outer_nodes, hex_meta = [], [], []
     hex_side_nodes = []
+    subdiv_used = []
     for (q, r) in sorted(roles.keys()):
         cx, cy = _axial_to_xy(q, r, hx.pitch_cm)
         center = np.array([cx, cy])
+        d_ring = (abs(q) + abs(r) + abs(q + r)) // 2
+        subdiv = subdiv_of(q, r, d_ring)
+        subdiv_used.append(subdiv)
         c, m, tris, outer_idx, side_nodes = _hex_submesh(
             center, Rc, roles[(q, r)], subdiv)
         coords_parts.append(c)
@@ -460,8 +494,13 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
         "n_assemblies": len(hex_centers),
         # mesh refinement level: the resolution-study axis. Recorded per sample so
         # a level can never be inferred from N alone (N also moves with
-        # reflector_rings).
-        "hex_subdiv": subdiv,
+        # reflector_rings). For a non-uniform mesh the spec is recorded along with
+        # the distinct levels actually used, since a single number cannot
+        # describe it.
+        "hex_subdiv": (list(subdiv_spec) if isinstance(subdiv_spec, (tuple, list))
+                       else subdiv_spec),
+        "hex_subdiv_levels": sorted(set(int(s) for s in subdiv_used)),
+        "hex_subdiv_uniform": len(set(subdiv_used)) == 1,
         "pitch_cm": hx.pitch_cm,
         "total_rings": total_rings,
         "reflector_rings": reflector_rings,

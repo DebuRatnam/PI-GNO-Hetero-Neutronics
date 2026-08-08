@@ -60,6 +60,7 @@ class BatchedSample:
     coords: torch.Tensor          # [sumN, 2]
     nodal_volume: torch.Tensor    # [sumN]
     material_state: torch.Tensor  # [sumN] long
+    elements: torch.Tensor        # [sumT, 3] P1 triangles, offset into the batch
     batch: torch.Tensor           # [sumN] long, graph id per node
     ptr: torch.Tensor             # [B+1] long, node offset per graph
     n_groups: int
@@ -160,6 +161,8 @@ def collate_graphs(samples: Sequence, device=None) -> BatchedSample:
         coords=torch.cat([s.coords for s in samples], dim=0),
         nodal_volume=torch.cat([s.nodal_volume for s in samples], dim=0),
         material_state=torch.cat([s.material_state for s in samples], dim=0),
+        elements=torch.cat([s.elements + int(ptr[i])
+                            for i, s in enumerate(samples)], dim=0),
         batch=batch, ptr=ptr,
         n_groups=n_groups, n_graphs=len(samples),
         meta=samples[0].meta,

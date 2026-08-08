@@ -39,6 +39,11 @@ class Sample:
     nodal_volume: torch.Tensor   # [N] lumped nodal volume (the GNO quadrature
                                  #     weight; tiles the core area)
     material_state: torch.Tensor # [N] long material id (integer, not one-hot)
+    elements: torch.Tensor       # [T, 3] P1 triangles -> node ids. The PHYSICS
+                                 #     graph (distinct from the kNN message
+                                 #     graph); needed to interpolate a field
+                                 #     between meshes on the elements the
+                                 #     operator was actually assembled from.
     meta: dict                   # geometry_metadata (schema: n_groups,
                                  #     n_materials, node_feature_order, ...)
 
@@ -67,6 +72,7 @@ def load_torch_sample(path: str, device="cpu", dtype=torch.float32) -> Sample:
         coords=t(s["coordinates"]),
         nodal_volume=t(s["nodal_volume"]),
         material_state=t(s["material_state"], torch.long),
+        elements=t(s["elements"], torch.long),
         meta=s["geometry_metadata"],
     )
 
