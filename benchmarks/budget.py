@@ -33,8 +33,15 @@ SCALE_KNOB: Dict[str, str] = {
     "fno": "latent_channels",
 }
 
-# Widths that must stay a multiple of something (attention heads, FFT channels).
-KNOB_STEP: Dict[str, int] = {"pigno": 8, "deeponet": 8, "mgn": 8, "fno": 4}
+# Bisection granularity per knob. All four widths feed plain MLP / conv channel
+# counts with no divisibility constraint (no attention heads in these configs),
+# so a step of 1 is legal and lets the bisection land much closer to the budget.
+#
+# This is not cosmetic. FNO's spectral-convolution parameters scale with
+# latent_channels SQUARED, so a step of 4 jumped 284k -> ~600k straight past a
+# 400k target and match_budget refused the model outright rather than return one
+# 29% off budget. Step 1 makes the budget reachable.
+KNOB_STEP: Dict[str, int] = {"pigno": 1, "deeponet": 1, "mgn": 1, "fno": 1}
 
 
 def count_params(model_name: str, meta: dict, hparams: dict) -> int:

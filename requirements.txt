@@ -18,21 +18,39 @@ matplotlib>=3.7
 # --- benchmark baselines ----------------------------------------------------
 # NVIDIA PhysicsNeMo supplies the FNO and MeshGraphNet baselines. It requires
 # python 3.11-3.13 and torch>=2.5, and in v2.0 the CUDA backend is an orthogonal
-# extra rather than being hardcoded:
+# extra rather than being hardcoded.
 #
-#   pip install "nvidia-physicsnemo[cu12]"     # CUDA 12 (the GPU box)
-#   pip install "nvidia-physicsnemo[cu13]"     # CUDA 13
-#   pip install "nvidia-physicsnemo"           # macOS ARM: CPU-only
+# VERIFIED LOCALLY on python 3.11.15 / torch 2.13.0 / physicsnemo 2.1.1 /
+# torch_geometric 2.8.0 / torch_scatter 2.1.2 (macOS ARM, CPU-only). All four
+# models instantiate, run on real batched hex data, and train through
+# benchmarks/harness.py. Reproduce the env with:
+#
+#   conda create -n pigno-bench python=3.11 -y
+#   pip install torch numpy scipy pyyaml pandas matplotlib
+#   pip install "nvidia-physicsnemo[cu12]"      # CUDA 12 (the GPU box)
+#   pip install torch_geometric
+#   pip install --no-build-isolation torch_scatter      # SEE BELOW
+#
+# TWO GOTCHAS, both of which cost a failed run to discover:
+#
+#   1. MeshGraphNet needs torch_scatter, which is NOT pulled in by either
+#      physicsnemo or torch_geometric. Without it the constructor succeeds and
+#      the FIRST FORWARD raises
+#          ImportError: MeshGraphNet requires PyTorch Geometric and torch_scatter
+#      i.e. it fails after the model is built, not at import.
+#
+#   2. torch_scatter must be installed with --no-build-isolation. Its setup.py
+#      imports torch at build time, which pip's isolated build environment does
+#      not have, so a plain `pip install torch_scatter` dies with
+#      "ModuleNotFoundError: No module named 'torch'" from inside the build.
 #
 # Left commented so `pip install -r requirements.txt` still works on the local
 # python 3.9 training env, which CANNOT host PhysicsNeMo. Uncomment on the GPU
 # box, where the benchmark actually runs.
 #
 # nvidia-physicsnemo[cu12]>=2.0
-#
-# PhysicsNeMo's MeshGraphNet takes topology as a torch_geometric.data.Data, so
-# the MGN baseline additionally needs:
 # torch_geometric>=2.5
+# torch_scatter>=2.1          # install with --no-build-isolation
 #
 # DeepONet is NOT in physicsnemo core -- it lives in physicsnemo-sym, a much
 # heavier package whose constraint/geometry stack we do not use. benchmarks/
