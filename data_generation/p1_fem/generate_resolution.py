@@ -40,6 +40,7 @@ import numpy as np
 
 from datagen_config import DEFAULT, SamplingConfig
 from dataset import make_sample, save_sample
+from sharding import add_shard_args, owns, write_manifest
 
 # Same disjoint insertion ranges as the main hex splits, so E3 is measured in
 # the same extrapolation regime as E1/E2 rather than an easier one.
@@ -77,7 +78,8 @@ def parse_level(tok):
     return f"L{int(tok)}", int(tok)
 
 
-def generate(out_root: str, levels, counts: dict, validate: bool = True):
+def generate(out_root: str, levels, counts: dict, validate: bool = True,
+             shard: int = 0, n_shards: int = 1):
     manifest = []
     for split, n in counts.items():
         if n <= 0:
@@ -85,6 +87,11 @@ def generate(out_root: str, levels, counts: dict, validate: bool = True):
         cfg_rng = np.random.default_rng(SPLIT_SEED[split])
         configs = [draw_config(cfg_rng, split) for _ in range(n)]
         for ci, knobs in enumerate(configs):
+            # A shard owns whole CONFIGURATIONS, never single levels: the paired
+            # levels of one config must be produced together or the invariance
+            # metric has nothing to compare against.
+            if not owns(ci, shard, n_shards):
+                continue
             # ONE seed per configuration, replayed at every level -> identical
             # physics, different mesh
             core_seed = SPLIT_SEED[split] * 1_000_000 + ci
@@ -111,10 +118,14 @@ def generate(out_root: str, levels, counts: dict, validate: bool = True):
                 print(f"[{split} {name}] {ci:05d}  k={float(sample['k_eff']):.6f}  "
                       f"N={meta['n_nodes']}", flush=True)
 
-    with open(os.path.join(out_root, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
-    print(f"\nWrote {len(manifest)} samples to {out_root}")
-    _report_convergence(manifest, levels)
+    write_manifest(manifest, out_root, shard, n_shards)
+    print(f"\nWrote {len(manifest)} samples to {out_root} "
+          f"(shard {shard}/{n_shards})")
+    if n_shards > 1:
+        print("run `python sharding.py <out_root>` after the array completes "
+              "to merge shard manifests and verify no sample is missing")
+    else:
+        _report_convergence(manifest, levels)
     return manifest
 
 
@@ -186,14 +197,17 @@ def main():
     ap.add_argument("--eval", type=int, default=300, help="test-split configs")
     ap.add_argument("--no-validate", action="store_true")
     ap.add_argument("--verify-only", action="store_true")
+    add_shard_args(ap)
     a = ap.parse_args()
 
     if a.verify_only:
         verify_pairing(a.out, a.levels)
         return
     counts = {"train": a.train, "val": a.val, "test": a.eval}
-    generate(a.out, a.levels, counts, validate=not a.no_validate)
-    verify_pairing(a.out, a.levels)
+    generate(a.out, a.levels, counts, validate=not a.no_validate,
+             shard=a.shard, n_shards=a.n_shards)
+    if a.n_shards <= 1:
+        verify_pairing(a.out, a.levels)
 
 
 if __name__ == "__main__":

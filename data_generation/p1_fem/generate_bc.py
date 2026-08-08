@@ -51,6 +51,7 @@ import numpy as np
 
 from datagen_config import DEFAULT, robin_alpha_from_albedo
 from dataset import make_sample, save_sample
+from sharding import add_shard_args, owns, write_manifest
 
 # beta ranges: DISJOINT across splits. This is the axis under test.
 BETA_RANGE = {
@@ -66,31 +67,52 @@ SHIELD_RINGS = 0
 REFLECTOR_RINGS = 1
 
 
-def generate(out_root: str, counts: dict, validate: bool = True):
+def draw_configs(split: str, n: int) -> list:
+    """All configurations for a split, drawn up front from one rng.
+
+    Drawn ahead of the solve loop so a sample's configuration is a pure function
+    of its INDEX, not of how many samples were generated before it in this
+    process. That is what makes the run shardable: every shard replays this same
+    cheap draw and then solves only the indices it owns.
+    """
+    rng = np.random.default_rng(SPLIT_SEED[split])
+    lo, hi = BETA_RANGE[split]
+    out = []
+    for _ in range(n):
+        out.append({
+            "boundary_albedo": float(rng.uniform(lo, hi)),
+            "reflector_rings": REFLECTOR_RINGS,
+            "shield_rings": SHIELD_RINGS,
+            # i.i.d. across splits on purpose: beta is the only disjoint axis
+            "insert_fraction": float(rng.uniform(0.0, 1.0)),
+            "enrichment_boundary": int(rng.choice([3, 4, 5])),
+        })
+    return out
+
+
+def generate(out_root: str, counts: dict, validate: bool = True,
+             shard: int = 0, n_shards: int = 1, report: bool = True):
     manifest = []
     for split, n in counts.items():
         if n <= 0:
             continue
-        rng = np.random.default_rng(SPLIT_SEED[split])
         d = os.path.join(out_root, split)
         os.makedirs(d, exist_ok=True)
-        lo, hi = BETA_RANGE[split]
-        for i in range(n):
-            beta = float(rng.uniform(lo, hi))
-            knobs = {
-                "boundary_albedo": beta,
-                "reflector_rings": REFLECTOR_RINGS,
-                "shield_rings": SHIELD_RINGS,
-                # i.i.d. across splits on purpose: beta is the only disjoint axis
-                "insert_fraction": float(rng.uniform(0.0, 1.0)),
-                "enrichment_boundary": int(rng.choice([3, 4, 5])),
-            }
-            sample = make_sample(DEFAULT, rng=rng, validate=validate, **knobs)
+        for i, knobs in enumerate(draw_configs(split, n)):
+            if not owns(i, shard, n_shards):
+                continue
+            # per-sample seed: the core's burnup / temperature / rod depths are
+            # drawn INSIDE make_core, so the seed must depend only on the index
+            core_seed = SPLIT_SEED[split] * 1_000_000 + i
+            sample = make_sample(DEFAULT, rng=np.random.default_rng(core_seed),
+                                 validate=validate, **knobs)
             path = os.path.join(d, f"sample_{i:05d}.npz")
             save_sample(sample, path)
             meta = sample["geometry_metadata"]
+            beta = knobs["boundary_albedo"]
             manifest.append({
-                "split": split, "path": path,
+                "split": split, "index": i, "path": path,
+                "core_seed": core_seed,
                 "boundary_albedo": beta,
                 "robin_alpha": float(robin_alpha_from_albedo(beta)),
                 "k_eff": float(sample["k_eff"]),
@@ -100,13 +122,17 @@ def generate(out_root: str, counts: dict, validate: bool = True):
                 **{k: v for k, v in knobs.items() if k != "boundary_albedo"},
             })
             if i % 50 == 0:
-                print(f"[{split}] {i:05d}  beta={beta:.3f}  "
+                print(f"[{split} shard {shard}] {i:05d}  beta={beta:.3f}  "
                       f"k={float(sample['k_eff']):.6f}", flush=True)
 
-    with open(os.path.join(out_root, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
-    print(f"\nWrote {len(manifest)} samples to {out_root}")
-    _report_sensitivity(manifest)
+    write_manifest(manifest, out_root, shard, n_shards)
+    print(f"\nWrote {len(manifest)} samples to {out_root} "
+          f"(shard {shard}/{n_shards})")
+    if n_shards > 1:
+        print("run `python sharding.py <out_root>` after the array completes "
+              "to merge shard manifests and verify no sample is missing")
+    elif report:
+        _report_sensitivity(manifest)
     return manifest
 
 
@@ -145,9 +171,10 @@ def main():
     ap.add_argument("--val", type=int, default=500)
     ap.add_argument("--test", type=int, default=500)
     ap.add_argument("--no-validate", action="store_true")
+    add_shard_args(ap)
     a = ap.parse_args()
     generate(a.out, {"train": a.train, "val": a.val, "test": a.test},
-             validate=not a.no_validate)
+             validate=not a.no_validate, shard=a.shard, n_shards=a.n_shards)
 
 
 if __name__ == "__main__":
