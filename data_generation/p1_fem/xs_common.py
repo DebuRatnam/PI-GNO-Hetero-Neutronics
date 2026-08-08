@@ -105,12 +105,39 @@ GROUP_BOUNDARIES_EV = {
     "fhr": [1.0e-5, 0.625, 2.0e7],
 }
 
+# Physics-chosen FOUR-group structure for the hex (Natrium, FAST) reactor. Chosen to
+# NEST inside the G=2 structure -- the 0.1 MeV cut is kept, so G=4 groups {1,2} sum
+# to the old g1 and {3,4} to the old g2, and any G=2 vs G=4 bias comparison is a
+# refinement of the same partition rather than a different one.
+#
+#   1.353 MeV  (10 MeV * e^-2, standard lethargy grid): U-238 fast-fission threshold
+#              region. g1 isolates threshold fission + high-energy inelastic
+#              scattering, where nu and chi are hardest.
+#   0.1 MeV    the G=2 cut, retained (see the G=2 rationale above): SFR flux peak,
+#              above the U-238 inelastic threshold.
+#   9.1188 keV (10 MeV * e^-7): splits the slowing-down tail. g3 carries the
+#              unresolved-resonance capture range; g4 the resolved resonances
+#              (Na 2.85 keV, Fe/Cr structural) where the capture-to-fission ratio
+#              climbs steepest and rod/reflector worth concentrates.
+#
+# chi for this structure is materials.CHI_BY_G[4], derived from the same Watt
+# spectrum as the G=2 value (the two collapse consistently: g1+g2 = 0.9878 -> 0.99).
+# fhr has no G=4 structure on purpose -- its +380 pcm G=2 bias needs no refinement
+# (that contrast is the point of the study).
+GROUP_BOUNDARIES_EV_G4 = {
+    "hex": [1.0e-5, 9.1188e3, 1.0e5, 1.353e6, 2.0e7],
+}
+
 
 def group_boundaries_ev(reactor_type: str, G: int) -> List[float]:
     """Ascending group boundaries (length G+1). Uses the documented per-reactor
-    two-group cutoffs at G=2; log-spaced fill for finer group structures."""
+    cutoffs where a physics-chosen structure exists (G=2 both reactors, G=4 hex);
+    log-spaced fill otherwise (a placeholder, not a physics choice -- add a
+    structure above before collapsing a production table on it)."""
     if G == 2:
         return list(GROUP_BOUNDARIES_EV[reactor_type])
+    if G == 4 and reactor_type in GROUP_BOUNDARIES_EV_G4:
+        return list(GROUP_BOUNDARIES_EV_G4[reactor_type])
     import math
     lo, hi = 1.0e-5, 2.0e7
     lg = [math.log10(lo) + (math.log10(hi) - math.log10(lo)) * i / G for i in range(G + 1)]

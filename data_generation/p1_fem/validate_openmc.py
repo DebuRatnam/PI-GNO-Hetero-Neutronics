@@ -156,11 +156,32 @@ def _radial_power_diffusion(sample: dict, edges: np.ndarray) -> np.ndarray:
 def _run_transport(reactor_type: str, core_cfg, state, edges: np.ndarray, *,
                    particles: int, batches: int, inactive: int,
                    depletion_table: Optional[dict], workdir: str,
-                   axial_cm: Optional[float]) -> Tuple[float, float, np.ndarray]:
-    """Full-core CE eigenvalue run. Returns (k, k_std, radial fission rate)."""
+                   axial_cm: Optional[float],
+                   resume: bool = False) -> Tuple[float, float, np.ndarray]:
+    """Full-core CE eigenvalue run. Returns (k, k_std, radial fission rate).
+
+    `resume=True` loads an existing statepoint from this state's workdir instead of
+    re-running transport. Sound because the CE model is group-structure-independent:
+    the SAME statepoints are the reference for a G=2 and a G=4 diffusion comparison,
+    and reusing them means a new group structure costs zero transport. The workdir is
+    state-keyed, so a statepoint found there is this exact core state (same geometry
+    config; the tally is the same named radial_fission CylindricalMesh)."""
     import openmc
     import openmc_models
     from xs_depletion import composition_at
+
+    if resume:
+        import glob
+        sps = sorted(glob.glob(os.path.join(workdir, "statepoint.*.h5")))
+        if sps:
+            with openmc.StatePoint(sps[-1]) as sp:
+                k = sp.keff
+                radial = sp.get_tally(name="radial_fission").mean.reshape(-1).copy()
+            if radial.shape[0] != len(edges) - 1:
+                raise SystemExit(f"resumed statepoint {sps[-1]} has "
+                                 f"{radial.shape[0]} radial bins, expected "
+                                 f"{len(edges) - 1}; stale workdir")
+            return float(k.n), float(k.s), radial
 
     openmc_exec = openmc_models.prepare_openmc_env()
 
@@ -238,12 +259,39 @@ def _shape_error(a: np.ndarray, b: np.ndarray) -> Tuple[float, float, float]:
 def run(reactor_type: str, burnups: List[float], temperatures: List[float],
         rods: List[str], *, particles: int, batches: int, inactive: int,
         depletion: Optional[str], workdir: str, seed: int,
-        axial_cm: Optional[float]) -> List[dict]:
+        axial_cm: Optional[float], groups: int = 2,
+        xs_table: Optional[str] = None, resume: bool = False) -> List[dict]:
     from openmc_models import BranchState
     from xs_depletion import load_composition_table
 
     dep = load_composition_table(depletion) if depletion else None
     base = replace(DEFAULT, reactor_type=reactor_type)
+
+    # Group-structure override for the DIFFUSION side only -- the CE transport model
+    # is continuous-energy and does not know G exists, which is exactly why the same
+    # statepoints validate every group structure (--resume reuses them). Patching the
+    # material module before its first XS access is the handoff-blessed mechanism
+    # (the branch-table load is lazy); require_branch_table then verifies the table
+    # against group_boundaries_ev(reactor, G), so a mismatched table still raises.
+    if groups != 2 or xs_table is not None:
+        if reactor_type != "hex":
+            raise SystemExit("--groups/--xs-table is a hex study (fhr's +380 pcm "
+                             "G=2 bias needs no refinement)")
+        if xs_table is None:
+            raise SystemExit(f"--groups {groups} needs --xs-table (build one with: "
+                             f"xs_openmc.py --reactor hex --groups {groups} ...)")
+        import materials as _hex
+        if _hex._BRANCH is not None:
+            raise SystemExit("branch table already loaded before the --groups "
+                             "override; patch order bug")
+        chi = _hex.CHI_BY_G.get(groups)
+        if chi is None:
+            raise SystemExit(f"no analytic CHI for G={groups}; derive it in "
+                             f"materials.CHI_BY_G first (a cut and its chi are one "
+                             f"physical statement)")
+        _hex.N_GROUPS = groups
+        _hex.BRANCH_TABLE_PATH = xs_table
+        base = replace(base, physics=replace(base.physics, n_groups=groups, chi=chi))
     core_cfg = base.pebblecore if reactor_type == "fhr" else base.hexcore
     r_max = (base.pebblecore.R_vessel if reactor_type == "fhr"
              else base.hexcore.pitch_cm * (base.hexcore.fuel_rings
@@ -271,7 +319,7 @@ def run(reactor_type: str, burnups: List[float], temperatures: List[float],
                     # up for the other (same fix as xs_openmc.py).
                     workdir=os.path.join(workdir, "validate_" + reactor_type
                                          + "_" + state.key),
-                    axial_cm=axial_cm)
+                    axial_cm=axial_cm, resume=resume)
                 p_diff = _radial_power_diffusion(sample, edges)
                 rms, mx, rms_w = _shape_error(p_diff, radial)
                 rows.append({
@@ -334,12 +382,20 @@ def main():
     ap.add_argument("--axial-cm", type=float, default=None)
     ap.add_argument("--workdir", default="openmc_run")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--groups", type=int, default=2,
+                    help="diffusion-side group count (hex only; needs --xs-table)")
+    ap.add_argument("--xs-table", default=None,
+                    help="branch table collapsed on --groups (from xs_openmc.py)")
+    ap.add_argument("--resume", action="store_true",
+                    help="reuse existing CE statepoints in the state-keyed workdirs "
+                         "(the CE reference is group-structure-independent)")
     args = ap.parse_args()
 
     rows = run(args.reactor, args.burnups, args.temperatures, args.rods,
                particles=args.particles, batches=args.batches,
                inactive=args.inactive, depletion=args.depletion,
-               workdir=args.workdir, seed=args.seed, axial_cm=args.axial_cm)
+               workdir=args.workdir, seed=args.seed, axial_cm=args.axial_cm,
+               groups=args.groups, xs_table=args.xs_table, resume=args.resume)
 
     with open(args.out, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))

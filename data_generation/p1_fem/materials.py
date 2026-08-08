@@ -47,7 +47,7 @@ from typing import Dict, List
 import numpy as np
 
 from xs_branch import require_branch_table
-from xs_common import GROUP_BOUNDARIES_EV, MultiGroupXS
+from xs_common import GROUP_BOUNDARIES_EV, MultiGroupXS, group_boundaries_ev
 
 
 # Canonical material id mapping (kept stable; embedded in metadata).
@@ -118,6 +118,19 @@ N_GROUPS: int = 2
 # (0.60,0.40), correct for a 0.8 MeV cut that this code never actually used.
 CHI = (0.99, 0.01)
 
+# Fission spectra per supported group count, each derived from the SAME Watt
+# spectrum (a=0.966 MeV, b=2.842 /MeV) over the boundaries in
+# xs_common.GROUP_BOUNDARIES_EV / GROUP_BOUNDARIES_EV_G4 -- a cut and its chi are
+# one physical statement (CLAUDE.md). The G=4 structure nests inside G=2 (0.1 MeV
+# cut retained), and the chis collapse consistently: 0.6043+0.3835 = 0.9878, the
+# same "98.78% of births above 0.1 MeV" the G=2 comment cites before rounding.
+# These are analytic FALLBACKS; a branch table built by xs_openmc.py carries a
+# TALLIED core chi that overrides them per state (see branch_chi / dataset.py).
+CHI_BY_G = {
+    2: CHI,
+    4: (0.6043, 0.3835, 0.0118, 0.0004),
+}
+
 # Transverse (axial) leakage buckling Bz^2 [1/cm^2], Bz^2 = (pi / H_extrap)^2.
 #
 # H_extrap = 135 cm: ~100 cm active height + ~15 cm REFLECTOR SAVINGS PER SIDE. The
@@ -169,12 +182,18 @@ _BRANCH = None
 
 
 def branch():
-    """The loaded branch table, or raise xs_branch.MissingBranchTable."""
+    """The loaded branch table, or raise xs_branch.MissingBranchTable.
+
+    Verifies against group_boundaries_ev("hex", N_GROUPS), so patching N_GROUPS
+    (+ BRANCH_TABLE_PATH, and resetting _BRANCH) before first XS access runs the
+    whole pipeline on a different group structure -- validate_openmc --groups
+    uses exactly this. At the default N_GROUPS=2 the expectation is byte-identical
+    to GROUP_BOUNDARIES_EV["hex"]."""
     global _BRANCH
     if _BRANCH is None:
         _BRANCH = require_branch_table(
             BRANCH_TABLE_PATH, reactor_type="hex", expect_n_groups=N_GROUPS,
-            expect_boundaries_ev=GROUP_BOUNDARIES_EV["hex"])
+            expect_boundaries_ev=group_boundaries_ev("hex", N_GROUPS))
     return _BRANCH
 
 
