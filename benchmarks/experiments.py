@@ -54,6 +54,19 @@ PARAM_BUDGET = 400_000
 GRAPH_MODELS = ["pigno", "mgn"]
 ALL_MODELS = ["pigno", "mgn", "fno", "deeponet"]
 
+# The paired discretization probe: the SAME physical cores meshed six ways.
+# L2 is omitted because it is the training discretization, so it appears in the
+# ordinary test split rather than as a transfer target. L6 (N ~ 128k) is the
+# fine truth mesh used to score accuracy; it is also a legitimate transfer
+# target, being ~9x the training node count.
+PROBE_MESHES = [
+    "datasets/hex_probe/L0",             # different meshing RULE, similar N
+    "datasets/hex_probe/L1",             # coarser
+    "datasets/hex_probe/L3",             # finer
+    "datasets/hex_probe/Lmixed3_1_3",    # density varies WITHIN one graph
+    "datasets/hex_probe/L6",             # much finer (truth mesh)
+]
+
 
 EXPERIMENTS: Dict[str, dict] = {
     # ---- E1: architecture, data-only loss ---------------------------------
@@ -66,14 +79,22 @@ EXPERIMENTS: Dict[str, dict] = {
     "e2_fhr": dict(data="datasets/fhr01", models=GRAPH_MODELS,
                    sweep={"lambda_pde": [0.0, 0.1, 1.0]}),
 
-    # ---- E3: resolution transfer (train L2, evaluate L1/L2/L3) ------------
-    # Training at the MIDDLE level means both a coarsening and a refinement are
-    # tested; training at an end would only ever test one direction.
+    # ---- E3: discretization transfer --------------------------------------
+    # Trained at L2, the MIDDLE uniform level, so both a coarsening and a
+    # refinement are tested; training at an end would only ever test one
+    # direction. Evaluated on the paired 6-mesh probe, whose configurations are
+    # drawn from a different seed and a disjoint control-insertion range, so
+    # there is no leakage from the training set.
     "e3_res": dict(data="datasets/hex_res/L2", models=ALL_MODELS, lambda_pde=0.0,
-                   transfer_to=["datasets/hex_res/L1", "datasets/hex_res/L3"]),
+                   transfer_to=PROBE_MESHES),
+    # The aggregation ablation is the one that attributes any GNO-vs-GNN
+    # difference to the MECHANISM rather than to the model's name: PI-GNO with
+    # `sum` is architecturally a GNN in exactly the respect under test, so if it
+    # tracks MeshGraphNet while `volume` separates from both, the volume
+    # quadrature is what did the work.
     "e3_res_agg": dict(data="datasets/hex_res/L2", models=["pigno"], lambda_pde=0.0,
                        sweep={"hparams.aggregation": ["sum", "volume", "volume_raw"]},
-                       transfer_to=["datasets/hex_res/L1", "datasets/hex_res/L3"]),
+                       transfer_to=PROBE_MESHES),
 
     # ---- E4: boundary-condition transfer ----------------------------------
     "e4_bc": dict(data="datasets/hex_bc", models=ALL_MODELS, lambda_pde=0.0),
