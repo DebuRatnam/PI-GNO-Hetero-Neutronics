@@ -6,9 +6,13 @@ it can be serialized into each sample's `geometry_metadata`. Do not hard-code th
 values elsewhere; import from this module.
 
 Conventions (recorded in metadata, never changed silently):
-  - Group ordering: BOTH groups are FAST (sodium fast reactor). index 0 =
-    high-fast (group 1, ~0.8-10 MeV), index 1 = slow-fast (group 2,
-    ~1 keV-0.8 MeV). Both sit in the fast spectrum (no moderated lower group).
+  - Group ordering is REACTOR-SPECIFIC; boundaries live in exactly one place,
+    xs_common.GROUP_BOUNDARIES_EV, and are echoed into every sample's metadata.
+      hex (Natrium, FAST):  cut 0.1 MeV. index 0 = high-fast (g1, 0.1-20 MeV),
+        index 1 = slow-fast (g2, 1e-5 eV-0.1 MeV). Both fast; no moderated
+        population in g2, only a slowing-down tail.
+      fhr (KP-FHR, THERMAL): cut 0.625 eV. index 0 = fast, index 1 = genuine
+        thermal group.
   - Mesh: IRREGULAR. An adaptive point cloud (dense near material interfaces,
     coarse in bulk) is triangulated with a Delaunay triangulation; the PDE is
     discretized with linear (P1) finite elements. One NODE = one mesh vertex; node
@@ -23,13 +27,17 @@ Conventions (recorded in metadata, never changed silently):
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Tuple
 
 
-# Fission spectrum across the two FAST groups. Watt/fission spectrum peaks ~2 MeV
-# -> most neutrons born in the high-energy fast group (g1), a few percent below
-# the g1/g2 cut land in the slow-fast group (g2). NOT a moderated/slowed split.
+# Generic G=2 fission spectrum FALLBACK only. Both reactor modules override it with
+# a chi derived for their own group boundary, and dataset.py prefers the module's
+# CHI whenever its length matches n_groups:
+#   materials.CHI     = (0.99, 0.01)  -- Natrium, 0.1 MeV cut
+#   materials_fhr.CHI = (1.00, 0.00)  -- KP-FHR, 0.625 eV cut
+# This value is reached only for a reactor/group combination that defines neither.
 CHI = (0.95, 0.05)
 
 # Legacy FDM vacuum extrapolation factor (Milne). UNUSED by the FEM assembly; kept
@@ -125,91 +133,239 @@ class HexCoreConfig:
     gaps are Delaunay-stitched sodium. Radial roles: inner fuel -> outer fuel ->
     reflector rings -> shield rings, with 9 primary + 4 secondary control positions
     replacing selected fuel assemblies.
+
+    WHAT IS ACTUALLY SOURCED. TerraPower's Natrium construction permit application
+    (Kemmerer Unit 1, 2024) and the associated NRC safety evaluations are public, but
+    the core map is not: the public record fixes only that Natrium is an 840 MWth
+    pool-type SFR; that Type 1 fuel is U-10wt%Zr metal, sodium-bonded, HT9-clad, with
+    enrichment varying by core position and a PEAK below 20 wt% U-235; that reactivity
+    control is NINE primary + FOUR secondary control assemblies using B4C absorber
+    (NRC ML24220A154 / ML24103A212, Fuel and Control Assembly topical report SE); and
+    that five assembly types are modelled (fuel, primary control, secondary control,
+    reflector, shield), all hexagonal ducts with an inlet nozzle, load pads and a
+    handling socket (ML24088A085, Core Design and Thermal Hydraulic Technical Report).
+
+    Everything dimensional below -- pitch, duct wall, gap, ring counts, the pin
+    lattices in openmc_models -- is REPRESENTATIVE of a HALEU metal-fuel SFR of this
+    class, not a vendor number, because those values are not in the public docket.
+    This is why the reactor is labelled "Natrium-inspired" everywhere and why
+    xs_provenance in every sample carries the transport/data-library trail instead.
     """
-    pitch_cm: float = 18.7            # assembly center-to-center
+    pitch_cm: float = 18.7            # assembly center-to-center (representative)
     duct_wall_cm: float = 0.37        # HT9 wall thickness (provenance/homogenization)
     gap_cm: float = 0.40              # inter-assembly sodium gap
     hex_subdiv: int = 2               # triangulation refinement per hex (1->6, 2->24 tris)
 
-    # radial ring layout (from the center outward). Default = REDUCED dev core
-    # (fuel_rings=4 -> R=6 -> 127 assemblies). Full Natrium-like: fuel_rings~7,
-    # reflector_rings=2, shield_rings=2.
-    fuel_rings: int = 4
+    # Radial ring layout (from the center outward): fuel_rings occupies rings
+    # 0..fuel_rings-1, then reflector_rings, then shield_rings, then vacuum. Total
+    # lattice is rings 0..R with R = fuel_rings + reflector_rings + shield_rings - 1,
+    # so fuel_rings=7 -> R=8 -> 217 assemblies, of which 127 are central positions
+    # and 13 of those are control (see below) -> 114 fuel assemblies.
+    #
+    # These were fuel_rings=4 (91 assemblies, 24 fuel) until the core map was priced
+    # against OpenMC constants: that is a REDUCED DEV CORE, and it is subcritical for
+    # a reason that is arithmetic, not nuclear. The 13 control assemblies below are a
+    # docketed Natrium count, so at fuel_rings=4 they occupied 13 of 37 central
+    # positions -- 35% of the active region was absorber/sodium-follower instead of
+    # the ~10% a real Natrium core runs. The measured neutron balance at fuel_rings=4
+    # put only 50.6% of losses in fuel absorption, with 13.8% eaten by the B4C shield
+    # (one 18.7 cm SS316H reflector ring is near-transparent to fast neutrons,
+    # Sigma_r1 ~ 0.0063 /cm) and 28.6% to axial leakage. Radial leakage to vacuum was
+    # 0.50%, and the OpenMC leakage fraction 1.4%, so the deficit was never a leakage
+    # problem -- it was too little fuel. Do not "fix" k by touching cross sections or
+    # enrichments; the core map is the physical quantity here.
+    fuel_rings: int = 7
     reflector_rings: int = 1
     shield_rings: int = 1
-    enrichment_boundary_ring: int = 2   # rings <= this = inner enrichment, else outer
+    # rings <= this = INNER enrichment zone, else OUTER. SFR radial zoning puts the
+    # HIGHER enrichment in the OUTER zone: the periphery leaks hard (long fast
+    # mean free path, steep flux gradient), so the outer zone needs more fissile to
+    # flatten the radial power profile. See openmc_models.natrium_model (the two zones
+    # are separate enrichments there, and separate tally domains in the branch table).
+    #
+    # Chosen on RADIAL POWER FLATTENING, which is what zoning is for, not on k. At
+    # fuel_rings=7 this gives a 48/52 inner/outer volume split and the flattest,
+    # only monotone profile (peak/avg 1.674 rods out). Smaller values are degenerate:
+    # boundary=2 leaves 85% of the fuel in the outer zone and raises an interior ring
+    # peak at r ~ 52-67 cm; boundary=5 over-corrects into a centre peak. Balanced
+    # two-zone splits are also what SFRs of this class run (ABTR-class ~44/56 by
+    # assembly count); the Natrium zone split itself is not in the public docket.
+    enrichment_boundary_ring: int = 4
 
-    # reactivity control (positions chosen deterministically from these counts)
+    # Reactivity control: 9 primary + 4 secondary control assemblies, B4C absorber.
+    # This IS a docketed Natrium number (NRC Fuel and Control Assembly TR SE).
     n_primary_control: int = 9
     n_secondary_control: int = 4
     control_insert_fraction: Tuple[float, float] = (0.0, 1.0)  # frac of rods inserted
 
-    # burnup + temperature proxy (per assembly). xs_perturb is a small SYMMETRIC +/-
-    # temperature/density wiggle on nuSf; burnup is DIRECTIONAL (fuel only): fissile
-    # depletion lowers nuSf by up to burnup_max, and fission-product poison raises
-    # removal by burnup_poison_coeff*burnup.
-    xs_perturb: float = 0.03          # symmetric +/- temperature/density wiggle (nuSf)
-    burnup_max: float = 0.12          # max burnup fraction (directional depletion)
-    burnup_poison_coeff: float = 0.30 # removal rise per unit burnup (fission products)
+    # Per-assembly burnup + temperature spread.
+    #
+    # PRIMARY PATH (OpenMC branch table present): a burnup [MWd/kgHM] and a
+    # temperature [K] are drawn per assembly from these ranges and looked up in the
+    # branch table, so depletion and Doppler are computed quantities.
+    #
+    # These ranges MUST stay inside the tabulated branch points, or the interpolator
+    # clamps and every state past the last point silently collapses onto it. The
+    # burnup ceiling tracks the depletion table (depletion_natrium.json reaches
+    # 60 MWd/kgHM); raise both together, never this alone.
+    # xs_branch.check_axis_coverage warns at generation time if they drift apart.
+    #
+    # The floor is 2, not 0, on purpose: Xe-135 equilibrates in ~3 days (~0.14
+    # MWd/kgHM here) and Sm-149 in ~1-2 months (~1.4), so a truly fresh endpoint is
+    # the only state in the whole range with no saturating fission-product poison.
+    # Interpolating from it smears that step across the entire axis. An operating
+    # core has no xenon-free fuel anyway. Fast spectrum, so the effect is small here
+    # -- Xe-135's 2.6 Mbarn absorption is a thermal resonance -- but the FHR floor
+    # exists for the same reason and there it matters.
+    burnup_mwd_kg_range: Tuple[float, float] = (2.0, 60.0)
+    # Natrium runs sodium at roughly 360 C in / 510 C out (633 / 783 K) with metal
+    # fuel a few hundred K above the local coolant, so the Doppler axis spans core
+    # inlet to peak fuel rather than sitting entirely above the outlet temperature.
+    temperature_k_range: Tuple[float, float] = (630.0, 1000.0)
+    # Both ranges must fall inside the branch grid in xs_natrium.json; states outside
+    # it clamp onto the outermost tabulated point (xs_branch.check_axis_coverage
+    # warns). The ad-hoc xs_perturb / burnup_max / burnup_poison_coeff multipliers
+    # that used to stand in for depletion and Doppler are gone -- burnup and
+    # temperature are transport branch axes now, not scale factors.
 
 
 @dataclass(frozen=True)
 class PebbleCoreConfig:
     """Kairos KP-FHR PEBBLE-BED core (thermal spectrum). All lengths in cm.
 
-    ANNULAR core (gFHR-accurate), radial build out from the center:
-        0          .. R_center_refl : central graphite reflector column (solid)
-        R_center   .. R_fuel_in     : inner unfueled pebble zone (graphite pebbles)
-        R_fuel_in  .. R_fuel_out    : FUELED pebble annulus (fuel + moderator pebbles)
-        R_fuel_out .. R_bed         : outer unfueled pebble zone (graphite pebbles)
-        R_bed      .. R_refl        : outer graphite reflector (houses control channels)
-        R_refl     .. R_vessel      : steel vessel ring
+    Dimensions are the PUBLISHED gFHR benchmark -- Kairos Power's own non-proprietary
+    KP-FHR surrogate (Satvat et al., Nucl. Eng. Des. 384 (2021) 111461; INL Virtual
+    Test Bed "Description of the generic FHR"; Duchnowski et al. 2023 Table 1). That
+    is the only KP-FHR-family core with an open dimensional specification, so it is
+    what the geometry is anchored to. Radial build out from the center:
+
+        0          .. R_bed     = 120  : pebble bed, SOLID cylinder
+        R_bed      .. R_refl    = 180  : graphite side reflector (60 cm thick),
+                                         holds the control-element channels
+        R_refl     .. R_barrel  = 182  : SS316H core barrel (2 cm)
+        R_barrel   .. R_downcmr = 187  : FLiBe downcomer (5 cm)
+        R_downcmr  .. R_vessel  = 191  : SS316H reactor vessel (4 cm)
+
+    NOT ANNULAR: the gFHR/KP-FHR bed is a full-diameter cylinder with no central
+    reflector column (pebbles are buoyant and float up through the whole bed). The
+    R_center_refl / R_fuel_in / R_fuel_out knobs are kept so an inner column or an
+    unfueled radial band CAN be modelled, but they default to "off" (0 / full bed).
+
+    Active height is 309.47 cm and enters this 2D radial model only through
+    materials_fhr.AXIAL_BUCKLING_CM2, never as an in-plane dimension.
+
+    Barrel + downcomer + vessel are carried as ONE homogenized `vessel` FEM ring;
+    openmc_models tallies the three separately and homogenizes them by area.
+
+    Reactivity control follows HERMES AS LICENSED (NRC KP-FHR Core Design and
+    Analysis Methodology topical report KP-TR-024-NP Rev 0, ML24095A258, April 2024
+    -- earlier revisions ML21272A383 / ML23195A130; element counts from the Hermes
+    PSAR): the reactivity CONTROL system inserts control elements into engineered
+    channels in the side graphite reflector, and the reactivity SHUTDOWN system
+    inserts shutdown elements DIRECTLY into the packed bed. Hermes as licensed has
+    4 control + 3 shutdown in a ~2 m^3 core; this model keeps the Hermes SHUTDOWN
+    count (3) but uses the gFHR CONTROL count (n_control=10 reflector rods), because
+    the bed radius here is gFHR's -- see the n_control comment below. The element
+    GEOMETRY (2.6 cm radius B4C, 7.9 cm from bed edge to rod centre) is the
+    published gFHR rod.
     Each pebble center = one node (4 cm dia, r_peb=2.0). FLiBe fills the bed gaps.
-    Control elements sit in the OUTER REFLECTOR (NRC: control inserts into the side
-    graphite reflector); shutdown elements insert into the inner fueled bed (NRC).
-    Both are rigid shapes in graphite-lined channels. Defaults = REDUCED dev core;
-    scale the radii up for the full thousands-of-pebbles core. See
-    geometry_pebble.make_pebble_core.
+
+    For fast iteration scale the radii down together (a Hermes-sized 2 m^3 core is
+    roughly R_bed ~ 60 cm); the solver/graph code is size-agnostic.
     """
-    # annular radii (out from center)
-    R_center_refl: float = 12.0       # central graphite reflector column radius
-    R_fuel_in: float = 20.0           # inner edge of the fueled pebble annulus
-    R_fuel_out: float = 56.0          # outer edge of the fueled pebble annulus
-    R_bed: float = 62.0               # outer edge of the pebble bed (unfueled band)
-    R_refl: float = 78.0              # outer graphite reflector outer radius
-    R_vessel: float = 80.5            # structural vessel outer radius (thin steel shell)
+    # radial build (out from center); gFHR benchmark values
+    R_center_refl: float = 0.0        # central graphite column (gFHR/KP-FHR: none)
+    R_fuel_in: float = 0.0            # inner edge of the FUELED zone (0 = from center)
+    R_fuel_out: float = 120.0         # outer edge of the FUELED zone (= R_bed)
+    R_bed: float = 120.0              # pebble bed radius (gFHR: 1.2 m)
+    R_refl: float = 180.0             # graphite side reflector outer radius (60 cm thick)
+    R_barrel: float = 182.0           # SS316H core barrel outer radius (2 cm)
+    R_downcomer: float = 187.0        # FLiBe downcomer outer radius (5 cm)
+    R_vessel: float = 191.0           # SS316H reactor vessel outer radius (4 cm)
     r_peb: float = 2.0                # pebble radius (4 cm dia, gFHR; node half-spacing)
     packing_fraction: float = 0.50    # target 2D RSA packing fraction (jamming ~0.55)
     # real pebble beds are ~60% pebbles / 40% FLiBe by volume (random sphere packing
     # ~0.60). Interstitial FLiBe node count = coolant_per_pebble * n_pebbles; 1.0 is
     # EMPIRICALLY CALIBRATED to ~60% pebble / 40% coolant nodal-volume in the bed.
     coolant_per_pebble: float = 1.0
-    graphite_pebble_frac: float = 0.15  # fraction of moderator-only pebbles in the
-                                        # fueled annulus (NRC: sets C/HM ratio)
+    # Moderator-only ("graphite") pebbles are a real KP-FHR feature: NRC Hermes
+    # docket material states that a portion of the pebbles in the core are moderator
+    # pebbles, and that they contribute moderation alongside the fuel-pebble graphite,
+    # the FLiBe and the reflector blocks. The FRACTION is not public (the gFHR
+    # surrogate publishes a single equilibrium pebble type), so this is a documented
+    # representative value, swept over graphite_pebble_fraction_range per sample.
+    graphite_pebble_frac: float = 0.15
 
     # control elements: rigid cylinders in the OUTER graphite reflector.
-    # NOTE: exact Hermes control-element diameter is proprietary; r_ctrl is a
-    # documented REPRESENTATIVE value anchored to the public gFHR rod (5.2 cm dia).
-    r_ctrl: float = 2.6               # control-element radius (5.2 cm dia, gFHR proxy)
-    n_control: int = 4                # 4 control elements (NRC: in the reflector)
-    control_offset: float = 7.0       # control-ring radius = R_bed + this (into reflector)
+    # NOTE: exact Hermes control-element diameter is proprietary; r_ctrl and the
+    # radial offset are the PUBLISHED gFHR rod (2.6 cm radius; 7.9 cm from the bed
+    # edge to the rod centre) used as the documented representative geometry.
+    r_ctrl: float = 2.6               # control-element radius (gFHR rod, 5.2 cm dia)
+    # 10 equally-spaced reflector rods, matching the gFHR reactivity-control system
+    # whose bed radius this core uses. Hermes as licensed has FOUR control elements,
+    # but in a ~2 m^3 core roughly a sixteenth of this bed's cross section -- putting
+    # 4 rods around a 120 cm bed would make the bank nearly worthless. If you rescale
+    # the radii to Hermes, set n_control=4 with it.
+    n_control: int = 10
+    control_offset: float = 7.9       # control-ring radius = R_bed + this (gFHR: 7.9 cm)
     n_circle_nodes: int = 16          # rigid-circle boundary nodes per control cylinder
     channel_wall: float = 1.6         # graphite channel-lining thickness around elements
 
-    # shutdown elements: rigid X-shapes in the inner fueled bed (NRC).
-    n_shutdown: int = 3               # 3 X-shaped shutdown elements
+    # shutdown elements: rigid X-shapes inserted DIRECTLY into the packed bed (NRC
+    # KP-TR-024-NP: the RSS inserts shutdown elements directly into the pebble bed,
+    # while the RCS inserts control elements into side-reflector channels).
+    n_shutdown: int = 3               # 3 X-shaped shutdown elements (Hermes)
     shutdown_ring_frac: float = 0.42  # shutdown-ring radius / R_fuel_out (inner bed)
-    x_arm_len: float = 7.0            # X arm half-length
-    x_arm_w: float = 3.0              # X bar width
+    # Shutdown-element geometry is NOT public (gFHR carries no shutdown elements at
+    # all). These are sized to keep the blade footprint a fixed ~12% of the bed
+    # radius, so the bank stays a meaningful reactivity lever at the gFHR bed size
+    # instead of a token absorber; scale them with R_bed if you rescale the core.
+    x_arm_len: float = 15.0           # X arm half-length
+    x_arm_w: float = 6.0              # X bar width
 
     coolant_step_frac: float = 1.5    # interstitial coolant grid step / r_peb
-    # burnup + temperature proxy (per fuel pebble). burnup_perturb is the max burnup
-    # FRACTION: fissile depletion lowers nuSf, and fission-product poison (Xe/Sm)
-    # raises the THERMAL removal Sr2 by burnup_poison_coeff*burnup (strong in a thermal
-    # core). temp_perturb is a small symmetric +/- temperature/density wiggle on nuSf.
-    burnup_perturb: float = 0.10      # max burnup fraction (directional depletion)
-    burnup_poison_coeff: float = 0.60 # thermal-removal rise per unit burnup (poison)
-    temp_perturb: float = 0.03        # symmetric +/- temperature/density wiggle (nuSf)
+    # Grid step for the SOLID structure rings, as a multiple of r_peb. The 60 cm
+    # graphite reflector has no sub-pebble features, so it is meshed coarser than the
+    # bed; the thin barrel/downcomer/vessel rings keep the fine (coolant) step so each
+    # 2-5 cm layer is still resolved.
+    structure_step_frac: float = 3.0
+    # Per-pebble burnup + temperature spread. In a pebble bed this is real physical
+    # variability: recirculation means pebbles of every burnup coexist at every
+    # radius, which is exactly the state this dataset is meant to cover.
+    #
+    # PRIMARY PATH (OpenMC branch table present): burnup [MWd/kgHM] and temperature
+    # [K] are drawn per pebble from these ranges and looked up in the branch table,
+    # so depletion (including Xe/Sm poisoning) and Doppler are computed.
+    # Floor is 2, not 0: past Xe-135 (~0.09 MWd/kgHM) and Sm-149 (~1.8) equilibrium.
+    # This is a THERMAL core, so those poisons are first-order -- a fresh endpoint
+    # would put a saturating step change at one end of a linearly interpolated axis.
+    # Ceiling tracks the published gFHR discharge burnup: 17.6% FIMA average / ~20%
+    # FIMA peak, i.e. ~170 / ~190 MWd/kgHM at ~9.6 MWd/kgHM per % FIMA. With 8-pass
+    # recirculation every burnup between the floor and the discharge limit coexists in
+    # the bed at once, which is exactly the spread this axis samples.
+    burnup_mwd_kg_range: Tuple[float, float] = (2.0, 190.0)
+    # gFHR coolant runs 823.15 K in / 923 K out; fuel and graphite sit above the local
+    # salt temperature, so the axis spans core inlet to peak fuel.
+    temperature_k_range: Tuple[float, float] = (823.15, 1100.0)
+    #
+    # SPATIAL CORRELATION of the burnup field, in [0, 1]. 0 (default) = burnup drawn
+    # i.i.d. per pebble, uncorrelated in space. >0 blends in a linear radial ramp, so
+    # a fraction `w` of the burnup range is explained by radius (bed centre -> edge)
+    # and (1-w) stays random.
+    #
+    # The licensed methodology (KP-TR-024-NP) does not do either: it runs DEM pebble
+    # flow through ZONER to build spectral zones, so burnup is correlated along pebble
+    # FLOW PATHS. Most of that correlation is axial and a 2D radial slice cannot see
+    # it. The radial part is real -- pebbles near the reflector wall flow slower, so
+    # they reside longer and burn deeper -- but its magnitude is proprietary. Hence
+    # opt-in rather than a default: turning it on is a documented modelling choice,
+    # and the value used is recorded in each sample's modelling_assumptions.
+    burnup_radial_weight: float = 0.0
+    # burnup_mwd_kg_range / temperature_k_range must fall inside the branch grid in
+    # xs_fhr.json; states outside clamp onto the outermost tabulated point
+    # (xs_branch.check_axis_coverage warns). The ad-hoc burnup_perturb /
+    # burnup_poison_coeff / temp_perturb multipliers are gone: Xe/Sm poison comes from
+    # depleted isotopics and Doppler + S(alpha,beta) from the temperature branch.
     # per-sample variability drawn per split (see make_split_plans_fhr); ranges here
     # bound the fraction of control / shutdown inserted and the moderator-pebble
     # fraction (fuel:moderator ratio is a real KP-FHR reactivity lever).
@@ -257,41 +413,70 @@ class DataGenConfig:
         derived from `reactor_type` + `physics.n_groups`, so both Natrium (hex, fast)
         and KP-FHR (pebble, thermal) samples record a self-describing schema.
         """
-        from xs_common import xs_col_names   # local import avoids any load-order cycle
+        # local import avoids any load-order cycle
+        from xs_common import group_boundaries_ev, xs_col_names
         G = self.physics.n_groups
+        boundaries_ev = group_boundaries_ev(self.reactor_type, G)
         if self.reactor_type == "fhr":
-            from materials_fhr import MATERIAL_ORDER
+            from materials_fhr import CHI as MOD_CHI, MATERIAL_ORDER, branch_metadata
             core_cfg, core_key = asdict(self.pebblecore), "pebblecore"
             discretization = ("P1 finite elements on a KP-FHR pebble-bed core: "
                               "RSA-packed pebble nodes + FLiBe coolant, Delaunay "
                               "triangulated (N varies per sample)")
             spectrum = ("thermal (Kairos KP-FHR / graphite + FLiBe moderated); "
-                        "g1 fast, g2 thermal (~0.625 eV boundary)")
+                        "g1 fast, g2 thermal, cut at "
+                        f"{boundaries_ev[1]:g} eV")
             group_ordering = "0=fast, 1=thermal (thermal-spectrum pebble bed)"
-            geometry_model = ("KP-FHR pebble bed: RSA-packed fuel/graphite pebbles "
-                              "(1 node/pebble), FLiBe coolant, 4 outer B4C control "
-                              "cylinders + 3 inner B4C X shutdown elements, graphite "
-                              "reflector + steel vessel")
+            pb = self.pebblecore
+            geometry_model = ("KP-FHR pebble bed at published gFHR dimensions: "
+                              "cylindrical (non-annular) RSA-packed fuel/graphite "
+                              f"pebble bed R={pb.R_bed:g} cm (1 node/pebble) in FLiBe, "
+                              f"{pb.R_refl - pb.R_bed:g} cm graphite side reflector "
+                              f"holding {pb.n_control} B4C control cylinders in lined "
+                              f"channels (NRC KP-TR-024-NP: RCS inserts into the side "
+                              f"reflector, not the bed), {pb.n_shutdown} B4C X-shaped "
+                              "shutdown elements inserted directly into the bed, "
+                              "SS316H barrel + FLiBe downcomer + SS316H vessel as one "
+                              "homogenized ring")
             node_index_order = "pebbles first, then coolant/structure/reflector/vessel fill; see elements[T,3]"
         else:
-            from materials import MATERIAL_ORDER
+            from materials import CHI as MOD_CHI, MATERIAL_ORDER, branch_metadata
             core_cfg, core_key = asdict(self.hexcore), "hexcore"
             discretization = ("P1 finite elements on a hexagonal-duct core: structured "
                               "triangulation per assembly + Delaunay-stitched sodium gaps "
                               "(N varies per sample)")
-            spectrum = "fast (sodium fast reactor / Natrium-inspired); high-fast + slow-fast groups"
+            spectrum = ("fast (sodium fast reactor / Natrium-inspired); high-fast + "
+                        f"slow-fast groups, cut at {boundaries_ev[1]:g} eV -- no "
+                        "thermalized population in g2, only a slowing-down tail")
             group_ordering = "0=high-fast(g1), 1=slow-fast(g2); both groups fast spectrum"
+            hx = self.hexcore
             geometry_model = ("Natrium-inspired hexagonal-duct lattice: identical structured "
                               "submesh per assembly, homogenized HT9 duct+gap ring, "
-                              "9 primary + 4 secondary control positions")
+                              f"{hx.n_primary_control} primary + "
+                              f"{hx.n_secondary_control} secondary B4C control "
+                              "positions (TerraPower/NRC docketed count)")
             node_index_order = "hex-mesh order (per-assembly submeshes then gaps); see elements[T,3]"
+
+        # Same selection rule dataset.py applies: the reactor module's chi wins when
+        # its length matches G, else the generic PhysicsConfig fallback. A loaded
+        # branch table overrides this per sample with a TALLIED chi; that value is
+        # recorded alongside the branch provenance, not here.
+        chi_used = MOD_CHI if MOD_CHI is not None and len(MOD_CHI) == G else self.physics.chi
 
         node_feature_order = (["x", "y"]
                               + [f"mat_{m}" for m in MATERIAL_ORDER]
                               + xs_col_names(G)
                               + ["boundary_flag"])
 
+        # Where the cross sections came from. This is the provenance a reviewer needs
+        # to judge the labels: transport code + version, evaluated nuclear data
+        # library, weighting spectrum, branch grid, per-branch k_eff, Monte Carlo
+        # uncertainty. Never None -- the material module raises at import if it has no
+        # branch table, so a sample cannot exist without transport provenance.
+        xs_prov = branch_metadata()
+
         return {
+            "xs_provenance": xs_prov,
             "reactor_type": self.reactor_type,
             "n_groups": G,
             "n_materials": len(MATERIAL_ORDER),
@@ -306,8 +491,28 @@ class DataGenConfig:
             "dof_ordering": "group-major [g0(N), ..., g{G-1}(N)] -> GN",
             "node_index_order": node_index_order,
             "group_ordering": group_ordering,
+            # Ascending group boundaries [eV], length G+1, from the single source of
+            # truth (xs_common.GROUP_BOUNDARIES_EV) that also drives the OpenMC
+            # collapse. chi below is derived for THESE boundaries.
+            "group_boundaries_ev": boundaries_ev,
+            "chi": list(chi_used),
             "spectrum": spectrum,
             "boundary_condition": "vacuum (Marshak partial-current Robin term on boundary edges, alpha=0.5)",
+            # How the third dimension is treated. The transport models that produced
+            # the group constants are axially REFLECTIVE, so axial leakage is absent
+            # from xs_provenance and enters exactly once, here, as Bz^2 in the FEM
+            # removal term (see operators.assemble_AF). A reviewer comparing these
+            # labels against a transport k must either set Bz^2=0 or add the axial
+            # debit back; validate_openmc.py reports both.
+            "axial_leakage": {
+                "model": "2D radial + transverse buckling Bz^2 in the removal term",
+                "buckling_cm2": float(self.physics.axial_buckling),
+                "extrapolated_height_cm": (
+                    None if self.physics.axial_buckling <= 0.0
+                    else math.pi / math.sqrt(self.physics.axial_buckling)),
+                "basis": "active height + axial reflector savings per side "
+                         "(reflected core, not a bare slab)",
+            },
             "material_encoding": "one-hot [" + ", ".join(MATERIAL_ORDER) + "]",
             "graph_construction": "kNN message graph on mesh nodes; no hardcoded neighbors",
             "geometry_model": geometry_model,

@@ -5,27 +5,62 @@ pebble-bed core and returns the SAME `CoreGeometry` struct, so operators.py /
 solver.py / power.py / graph_build.py run unchanged.
 
 Physical model (2D radial, frozen state; each pebble homogenized to one node),
-faithful to the real KP-FHR / generic-FHR (gFHR) design:
+following the published gFHR dimensions and the licensed Hermes control layout:
 
-  - ANNULAR core (radial build out from center): central graphite reflector column
-    -> inner unfueled pebble zone (graphite pebbles) -> FUELED pebble annulus (fuel
-    + a fraction of graphite moderator pebbles) -> outer unfueled pebble zone ->
-    outer graphite reflector -> steel vessel.
+  - CYLINDRICAL core (radial build out from center): a full-diameter pebble bed
+    (R_bed = 120 cm) -> 60 cm graphite side reflector -> SS316H barrel + FLiBe
+    downcomer + SS316H vessel, carried as one homogenized `vessel` ring.
+    There is NO central reflector column: gFHR/KP-FHR pebbles are buoyant and float
+    up through the whole bed cross section. (PebbleCoreConfig still exposes
+    R_center_refl / R_fuel_in / R_fuel_out so an inner column or an unfueled radial
+    band can be modelled; they default to off.)
   - Each pebble center is ONE node (4 cm dia). FLiBe `coolant` fills the bed gaps.
-  - 4 `control_element` rigid cylinders sit in the OUTER graphite reflector -- NRC
-    KP-FHR: control elements insert into the side graphite reflector, NOT the bed.
-    Each is a rigid 16-node circle inside a graphite-lined channel.
-  - 3 `shutdown_element` rigid X-shapes insert into the inner fueled bed (NRC), each
-    in a graphite-lined channel separating the B4C from the pebbles/FLiBe.
+    A fraction of the pebbles are moderator-only `graphite_pebble` (NRC Hermes
+    docket: a portion of the core pebbles are moderator pebbles).
+  - `control_element` rigid cylinders sit in the OUTER graphite reflector -- KP-FHR
+    reactivity control system (RCS): control elements insert into engineered channels
+    in the side reflector, NOT the bed. Each is a rigid 16-node circle in a lined
+    channel.
+  - `shutdown_element` rigid X-shapes insert DIRECTLY into the packed bed -- KP-FHR
+    reactivity shutdown system (RSS), no graphite thimble; direct pebble/FLiBe
+    contact is what gives them their shutdown worth.
   - Insertion toggles absorber vs FLiBe-follower XS (moves k_eff). The fuel:moderator
-    pebble ratio is also a reactivity lever.
+    pebble ratio is also a reactivity lever -- it sets the carbon-to-heavy-metal
+    (CHM) atom ratio, the KP-FHR's analogue of an LWR moderator-to-fuel ratio.
 
 Group 2 is a genuine THERMAL group (graphite + FLiBe moderation). N varies per
 sample. Cross sections come from materials_fhr (OpenMC-upgraded when cached).
 
-Sources: NRC KP-FHR Core Design & Analysis Methodology (ML21272A383); Kairos gFHR
-benchmark (Satvat et al. 2021). Exact Hermes control-element diameter is
-proprietary; r_ctrl is a documented representative value (gFHR 5.2 cm rod proxy).
+MODELLING ASSUMPTIONS -- where this model knowingly departs from the licensed
+methodology (KP-TR-024-NP). All four are echoed into every sample's
+`modelling_assumptions` metadata block so a reviewer sees them without reading this:
+
+  1. BURNUP FIELD. Kairos runs DEM pebble-flow -> ZONER -> spectral zones and
+     generates constants per zone, so burnup is CORRELATED along pebble flow paths.
+     Here burnup is drawn i.i.d. per pebble by default (`burnup_radial_weight = 0`),
+     which is uncorrelated in space. Most of the real correlation is AXIAL and is
+     invisible to a radial slice; the radial part -- slower near-wall pebble flow ->
+     longer residence -> higher burnup at the bed edge -- can be switched on with
+     `burnup_radial_weight > 0`. The magnitude is proprietary, hence opt-in.
+  2. AXIAL SHAPE. This is a slice of the CYLINDRICAL section only. The real core adds
+     upper and lower conic regions, a defueling chute and a fuel insertion region;
+     the transverse buckling in PhysicsConfig.axial_buckling assumes a straight
+     cylinder of the active height and does not represent those.
+  3. REFLECTOR. Modelled as solid graphite. The real reflector is blocks with axial
+     coolant channels, instrumentation penetrations, inter-block gaps and keys, all
+     of which carry FLiBe and soften the reflector's return current.
+  4. SOLUTION METHOD. The licensed methodology has no diffusion step at all: it is
+     full-core 3D explicit Serpent 2 Monte Carlo with burnup. Multigroup diffusion is
+     this project's choice; validate_openmc.py measures the resulting reactivity bias
+     and radial power-shape error, and that measurement is what justifies the labels.
+
+Sources: NRC KP-FHR Core Design and Analysis Methodology topical report KP-TR-024-NP
+Rev 0 (ML24095A258, April 2024; earlier revisions ML21272A383, ML23195A130) for the
+RCS/RSS layout, the fuel-annulus pebble form, buoyancy, moderator pebbles and CHM
+ratio; the Hermes PSAR for the 4 control + 3 shutdown element count; the Kairos gFHR
+benchmark (Satvat et al., Nucl. Eng. Des. 384 (2021) 111461; INL Virtual Test Bed
+gFHR description) for every dimension. Exact Hermes element geometry is proprietary;
+r_ctrl (2.6 cm) and control_offset (7.9 cm) are the published gFHR rod.
 """
 
 from __future__ import annotations
@@ -37,8 +72,9 @@ from scipy.spatial import Delaunay, cKDTree
 
 from datagen_config import PebbleCoreConfig
 from geometry import CoreGeometry, triangle_areas, nodal_volumes
-from materials_fhr import MATERIAL_IDS, xs_for_id, up_scatter_for_id
-from xs_common import nusf_slice, sr_slice
+from materials_fhr import MATERIAL_IDS, branch, xs_for_id, up_scatter_for_id
+from xs_branch import check_axis_coverage
+from xs_common import n_xs_cols
 
 
 # --- footprint tests ---------------------------------------------------------
@@ -104,9 +140,12 @@ def _structure_centers(cfg: PebbleCoreConfig
 
 def _rsa_pebbles(cfg: PebbleCoreConfig, shut: np.ndarray,
                  rng: np.random.Generator) -> np.ndarray:
-    """RSA pack non-overlapping pebble-center disks in the ANNULAR bed
-    (R_center_refl .. R_bed), avoiding the shutdown-channel footprints."""
-    r_in = cfg.R_center_refl + cfg.r_peb
+    """RSA pack non-overlapping pebble-center disks across the bed
+    (R_center_refl .. R_bed), avoiding the shutdown-channel footprints.
+
+    R_center_refl is 0 on the gFHR/KP-FHR build, so the bed is a full disk; the
+    annular form is kept only for cores that do configure a central column."""
+    r_in = cfg.R_center_refl + cfg.r_peb if cfg.R_center_refl > 0.0 else 0.0
     r_out = cfg.R_bed - cfg.r_peb
     min_sep2 = (2.0 * cfg.r_peb) ** 2
     area = np.pi * (r_out ** 2 - r_in ** 2)
@@ -153,6 +192,30 @@ def _pebble_materials(cfg: PebbleCoreConfig, pebbles: np.ndarray,
     return mat.astype(np.int64)
 
 
+def _apply_radial_burnup(burn: np.ndarray, coords: np.ndarray,
+                         cfg: PebbleCoreConfig, lo: float, hi: float) -> np.ndarray:
+    """Blend a radial ramp into an i.i.d. burnup draw (see burnup_radial_weight).
+
+    b <- (1 - w) * b_iid + w * (lo + (hi - lo) * r / R_bed)
+
+    w = 0 returns `burn` untouched, so the default path and its random stream are
+    bit-identical to the uncorrelated model. w = 1 makes burnup a pure function of
+    radius, which is unphysical on its own -- multi-pass recirculation keeps every
+    burnup present at every radius -- so intermediate values are the meaningful ones.
+    Higher burnup goes to the bed EDGE: near-wall pebbles flow slower, reside longer
+    and burn deeper (the radial shadow of the DEM flow field ZONER resolves properly).
+
+    (lo, hi) is the range `burn` was drawn over, so this works unchanged for the
+    branch-table path (physical MWd/kgHM) and the legacy fallback (burnup fraction).
+    """
+    w = float(getattr(cfg, "burnup_radial_weight", 0.0))
+    if w <= 0.0:
+        return burn
+    w = min(w, 1.0)
+    rho = np.clip(np.hypot(coords[:, 0], coords[:, 1]) / max(cfg.R_bed, 1e-12), 0.0, 1.0)
+    return (1.0 - w) * burn + w * (lo + (hi - lo) * rho)
+
+
 def _free_boundary_edges(elements: np.ndarray) -> np.ndarray:
     """Edges belonging to exactly one triangle (the domain boundary)."""
     e = np.concatenate([elements[:, [0, 1]], elements[:, [1, 2]], elements[:, [2, 0]]], axis=0)
@@ -177,6 +240,7 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     if graphite_pebble_frac is not None:
         from dataclasses import replace
         cfg = replace(cfg, graphite_pebble_frac=float(graphite_pebble_frac))
+    burnup_radial_weight = float(getattr(cfg, "burnup_radial_weight", 0.0))
 
     ctrl, shut = _structure_centers(cfg)
     pebbles = _rsa_pebbles(cfg, shut, rng)
@@ -210,29 +274,40 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         for p in _cross_fill_nodes(sc, cfg.x_arm_len, cfg.x_arm_w, np.pi / 4.0, estep):
             coords.append(p); mats.append(shut_id)
 
-    # --- background grid for the SOLID regions: central reflector, outer reflector,
-    # steel vessel. The pebble bed is handled separately (target-count coolant below).
-    step = cfg.r_peb * cfg.coolant_step_frac
-    g = np.arange(-cfg.R_vessel, cfg.R_vessel + step, step)
+    # --- background grid for the SOLID regions outside the bed. Two resolutions:
+    # the 60 cm graphite reflector has no sub-pebble structure and is meshed coarse
+    # (structure_step_frac), while the barrel / downcomer / vessel stack is only a few
+    # cm per layer and keeps the fine (coolant) step so each layer is still resolved.
+    # The pebble bed itself is handled separately (target-count coolant below).
+    fine_step = cfg.r_peb * cfg.coolant_step_frac
+    refl_step = cfg.r_peb * cfg.structure_step_frac
     ctree = cKDTree(ctrl) if len(ctrl) else None
-    for gx in g:
-        for gy in g:
-            x = gx + (rng.random() - 0.5) * step * 0.35
-            y = gy + (rng.random() - 0.5) * step * 0.35
-            r = float(np.hypot(x, y))
-            if r > cfg.R_vessel:
-                continue
-            p = (x, y)
-            if r > cfg.R_refl:
-                coords.append(p); mats.append(vess_id)       # steel vessel shell
-            elif r > cfg.R_bed:
-                # outer graphite reflector; control elements own their channels
-                if ctree is not None and ctree.query(p)[0] < ctrl_wall_r + 0.5 * step:
+
+    def _fill(r_lo: float, r_hi: float, step: float, mat_id: int,
+              avoid_control: bool = False) -> None:
+        """Jittered square grid clipped to the annulus r_lo < r <= r_hi."""
+        if r_hi <= r_lo:
+            return
+        g = np.arange(-r_hi, r_hi + step, step)
+        for gx in g:
+            for gy in g:
+                x = gx + (rng.random() - 0.5) * step * 0.35
+                y = gy + (rng.random() - 0.5) * step * 0.35
+                r = float(np.hypot(x, y))
+                if not (r_lo < r <= r_hi):
                     continue
-                coords.append(p); mats.append(refl_id)
-            elif r <= cfg.R_center_refl:
-                coords.append(p); mats.append(refl_id)       # central reflector column
-            # (R_center_refl < r < R_bed) is the bed -> coolant placed below
+                p = (x, y)
+                if avoid_control and ctree is not None and (
+                        ctree.query(p)[0] < ctrl_wall_r + 0.5 * step):
+                    continue                    # control elements own their channels
+                coords.append(p); mats.append(mat_id)
+
+    # central graphite column, when one is configured (gFHR/KP-FHR: none)
+    _fill(0.0, cfg.R_center_refl, fine_step, refl_id)
+    # outer graphite reflector (holds the control channels)
+    _fill(cfg.R_bed, cfg.R_refl, refl_step, refl_id, avoid_control=True)
+    # barrel + downcomer + vessel, homogenized into one `vessel` ring
+    _fill(cfg.R_refl, cfg.R_vessel, fine_step, vess_id)
 
     # --- interstitial FLiBe: place coolant nodes to hit the real pebble:FLiBe VOLUME
     # ratio (~60:40). coolant_per_pebble=1.0 is calibrated to ~60% pebble volume
@@ -280,35 +355,58 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     boundary_mask[np.unique(boundary_edges)] = True
     V = nodal_volumes(coords, elements, areas)
 
-    # per-node cross sections; insertion toggles absorber XS for control/shutdown
-    ncol = len(xs_for_id(0).as_row())
+    # --- per-node cross sections -------------------------------------------------
+    # Insertion toggles absorber XS for control/shutdown. Burnup and temperature vary
+    # PER PEBBLE: recirculation means pebbles of every burnup coexist at every radius,
+    # which is the physical state this dataset covers.
+    fuel_mask = material_state == MATERIAL_IDS["fuel_pebble"]
+    G = len(xs_for_id(0).D)
+    ncol = n_xs_cols(G)
     xs = np.zeros((N, ncol))
+
+    # core-average insertion over BOTH control families: the spectrum shift inserted
+    # absorbers impose on every other material (measured by the rod branch cases).
+    all_depths = np.concatenate([ctrl_depths, shut_depths]) if (
+        len(ctrl_depths) or len(shut_depths)) else np.zeros(0)
+    core_rod_frac = float(all_depths.mean()) if all_depths.size else 0.0
+
+    # OpenMC branch table (the only source of cross sections): physical burnup
+    # [MWd/kgHM] + temperature [K] per node, looked up per state.
+    table = branch()          # raises MissingBranchTable if no OpenMC constants exist
+    check_axis_coverage(table, "burnup", *cfg.burnup_mwd_kg_range, label="fhr")
+    check_axis_coverage(table, "temperature", *cfg.temperature_k_range, label="fhr")
+    burn_mwd = rng.uniform(*cfg.burnup_mwd_kg_range, N)
+    temp_k = rng.uniform(*cfg.temperature_k_range, N)
+    burn_mwd = _apply_radial_burnup(burn_mwd, coords, cfg,
+                                    *cfg.burnup_mwd_kg_range)
+    burn_mwd[~fuel_mask] = 0.0
+
+    depth_per_node = np.zeros(N)
     for i in range(N):
-        m = material_state[i]
+        m = int(material_state[i])
         if m == ctrl_id and ctree_d is not None:
             d = float(ctrl_depths[ctree_d.query(coords[i])[1]])   # this element's depth
-            xs[i] = xs_for_id(m, insert_frac=d).as_row()
         elif m == shut_id and stree_d is not None:
             d = float(shut_depths[stree_d.query(coords[i])[1]])
-            xs[i] = xs_for_id(m, insert_frac=d).as_row()
         else:
-            xs[i] = xs_for_id(m).as_row()
-
-    # burnup + temperature proxy (fuel pebbles only). DIRECTIONAL: fissile depletion
-    # lowers nuSf; fission-product poison (Xe/Sm) raises the THERMAL removal Sr2. temp
-    # is a small symmetric +/- wiggle on nuSf (see PebbleCoreConfig).
-    fuel_mask = material_state == MATERIAL_IDS["fuel_pebble"]
-    nf = nusf_slice(2); sr = sr_slice(2)
-    burn = rng.uniform(0.0, cfg.burnup_perturb, N)
-    temp = 1.0 + rng.uniform(-cfg.temp_perturb, cfg.temp_perturb, N)
-    xs[fuel_mask, nf] *= ((1.0 - burn[fuel_mask]) * temp[fuel_mask])[:, None]
-    xs[fuel_mask, sr.start + 1] *= (1.0 + cfg.burnup_poison_coeff * burn[fuel_mask])  # Sr2 poison
+            d = 1.0                                               # ignored by non-control
+        depth_per_node[i] = d
+        xs[i] = xs_for_id(m, insert_frac=d, burnup_mwd_kg=float(burn_mwd[i]),
+                          temperature_k=float(temp_k[i]),
+                          core_rod_frac=core_rod_frac).as_row()
 
     control_rod_cells = np.where(np.isin(material_state, [ctrl_id, shut_id]))[0].astype(np.int64)
 
-    # per-node thermal up-scatter Ss_{g2->g1} (moderators only); assembled into A by
+    # per-node thermal up-scatter Ss_{g2->g1}; assembled into A by
     # operators.assemble_AF. Kept out of the per-node XS row (schema down-scatter-only).
-    upscatter = np.array([up_scatter_for_id(int(m)) for m in material_state], dtype=float)
+    # This is the TALLIED g2->g1 transfer at the node's own temperature -- up-scatter
+    # IS a thermal-motion effect, so evaluating it at the node's temperature matters.
+    upscatter = np.array([
+        up_scatter_for_id(int(material_state[i]), insert_frac=depth_per_node[i],
+                          burnup_mwd_kg=float(burn_mwd[i]),
+                          temperature_k=float(temp_k[i]),
+                          core_rod_frac=core_rod_frac)
+        for i in range(N)], dtype=float)
 
     meta = {
         "reactor_type": "fhr",
@@ -330,9 +428,49 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         "mean_shutdown_depth": float(shut_depths.mean()) if len(shut_depths) else 0.0,
         "R_center_refl": cfg.R_center_refl, "R_fuel_in": cfg.R_fuel_in,
         "R_fuel_out": cfg.R_fuel_out, "R_bed": cfg.R_bed,
-        "R_refl": cfg.R_refl, "R_vessel": cfg.R_vessel,
+        "R_refl": cfg.R_refl, "R_barrel": cfg.R_barrel,
+        "R_downcomer": cfg.R_downcomer, "R_vessel": cfg.R_vessel,
+        "core_shape": ("cylindrical bed (no central reflector column)"
+                       if cfg.R_center_refl <= 0.0 else "annular bed"),
         "upscatter_included": True,
         "upscatter_note": "thermal->fast Ss21, operator-level (in A), not in node XS row",
+        # Where this model knowingly departs from the licensed KP-FHR methodology
+        # (NRC KP-TR-024-NP Rev 0, ML24095A258). Carried in every sample so the
+        # departures are auditable without reading the source. See the module
+        # docstring for the long form.
+        "methodology_reference": ("NRC KP-FHR Core Design and Analysis Methodology, "
+                                  "KP-TR-024-NP Rev 0 (ML24095A258, April 2024)"),
+        "modelling_assumptions": {
+            "burnup_field": (
+                "i.i.d. per pebble, spatially uncorrelated" if burnup_radial_weight
+                <= 0.0 else
+                f"radial ramp blended at weight {burnup_radial_weight:g} "
+                f"(higher burnup toward the bed edge)"),
+            "burnup_radial_weight": float(burnup_radial_weight),
+            "burnup_field_departure": (
+                "licensed method derives burnup zones from DEM pebble flow via ZONER, "
+                "so burnup is correlated along flow paths; most of that correlation "
+                "is axial and invisible to a 2D radial slice"),
+            "axial_shape": (
+                "2D slice of the cylindrical bed section only; upper/lower conic "
+                "regions, defueling chute and fuel insertion region not represented, "
+                "and the transverse buckling assumes a straight cylinder"),
+            "reflector": (
+                "solid graphite annulus; real reflector is blocks with axial coolant "
+                "channels, instrumentation penetrations, inter-block gaps and keys"),
+            "solution_method": (
+                "multigroup P1-FEM diffusion; the licensed methodology uses full-core "
+                "3D explicit Serpent 2 Monte Carlo with burnup and no diffusion step. "
+                "Run validate_openmc.py for the resulting reactivity and power-shape "
+                "bias"),
+            "control_insertion": (
+                "binary per element in the dataset (each rod/blade fully in or out; "
+                "the lever is how many and which). Intermediate gray-rod depths are "
+                "supported by the XS API but are step-like for these black thermal "
+                "absorbers (volume-weighted blend -> rod cusping: 1% depth carries "
+                ">50% of element worth), so they are not sampled; the 0/1 endpoints "
+                "are the two measured transport branches"),
+        },
     }
 
     return CoreGeometry(

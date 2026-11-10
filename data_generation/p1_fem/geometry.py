@@ -10,11 +10,13 @@ Physical model (2D radial, homogenized-assembly diffusion, DIF3D-style):
   - The thin inter-assembly SODIUM GAPS are stitched with a Delaunay triangulation
     over the hex-boundary nodes plus explicit gap nodes (`coolant`), so the gap is a
     real physical region, not a blurred gradient.
-  - Control insertion toggles absorber vs sodium-follower cross sections; a small
-    per-assembly XS perturbation stands in for burnup/temperature spread.
+  - Control insertion toggles absorber vs sodium-follower cross sections; burnup
+    and temperature are drawn per assembly and looked up on the OpenMC branch
+    table (no ad-hoc XS perturbation).
 
-Domain boundary (for the Marshak vacuum BC) is the CONVEX HULL of the node cloud --
-robust to the mixed structured/Delaunay interior.
+Domain boundary (for the Marshak vacuum BC) is the set of outer hex edges with no
+neighbouring assembly -- the true (non-convex) lattice perimeter, found per edge by
+probing for a neighbour center across the edge midpoint.
 
 One NODE = one mesh vertex. N varies per sample. Both groups are FAST.
 """
@@ -28,7 +30,9 @@ import numpy as np
 from scipy.spatial import Delaunay
 
 from datagen_config import HexCoreConfig
-from materials import MATERIAL_IDS, ID_TO_MATERIAL, xs_for_id
+from materials import MATERIAL_IDS, ID_TO_MATERIAL, branch, xs_for_id
+from xs_branch import check_axis_coverage
+from xs_common import n_xs_cols
 
 SQRT3 = np.sqrt(3.0)
 DUCT_RING_FRAC = 0.18   # radial fraction of each hex homogenized as duct (HT9+gap)
@@ -39,7 +43,7 @@ class CoreGeometry:
     material_state: np.ndarray   # [N] int material id per node
     coordinates: np.ndarray      # [N, 2] node (x, y) in cm
     boundary_mask: np.ndarray    # [N] bool, True on domain boundary nodes
-    cross_sections: np.ndarray   # [N, 7] XS (D1,D2,Sr1,Sr2,Ss12,nuSf1,nuSf2)
+    cross_sections: np.ndarray   # [N, n_xs_cols(G)]; at G=2: (D1,D2,Sr1,Sr2,Ss12,nuSf1,nuSf2)
     control_rod_cells: np.ndarray  # [Ncr] node ids of control-assembly nodes
     elements: np.ndarray         # [T, 3] triangle -> node indices (P1 elements)
     boundary_edges: np.ndarray   # [B, 2] mesh edges on the domain boundary
@@ -283,26 +287,37 @@ def make_core(hx: HexCoreConfig, *, layout_name: str = "default",
     keepA = areas > 1e-9
     elements, areas = elements[keepA], areas[keepA]
 
-    # --- per-node cross sections (control insertion + per-assembly XS perturbation) ---
+    # --- per-node cross sections (control insertion + per-assembly burnup/temperature) ---
     hex_depth = np.array([m["depth"] for m in hex_meta] + [1.0])  # -1 (gap) -> unused
-    # per-assembly burnup + temperature proxy. temp = symmetric +/- wiggle on nuSf;
-    # burnup = DIRECTIONAL and fuel-only: fissile depletion lowers nuSf, fission-product
-    # poison raises removal Sr (see HexCoreConfig).
     nA = len(hex_meta) + 1
-    temp = 1.0 + rng.uniform(-hx.xs_perturb, hx.xs_perturb, size=nA)
-    burn = rng.uniform(0.0, hx.burnup_max, size=nA)
     fuel_ids = (MATERIAL_IDS["fuel_inner"], MATERIAL_IDS["fuel_outer"])
-    cross_sections = np.zeros((coords.shape[0], 7))
+    # core-average control insertion (over CONTROL assemblies only): the spectrum
+    # shift that inserted absorbers impose on every other material in the core. This
+    # is what the rod-out / rod-in branch pair measures.
+    core_rod_frac = float(depths.mean()) if len(depths) else 0.0
+
+    # OpenMC branch table (the only source of cross sections): draw a physical burnup
+    # [MWd/kgHM] and temperature [K] per assembly and look the constants up.
+    # Depletion and Doppler are computed, not assumed.
+    table = branch()          # raises MissingBranchTable if no OpenMC constants exist
+    check_axis_coverage(table, "burnup", *hx.burnup_mwd_kg_range, label="hex")
+    check_axis_coverage(table, "temperature", *hx.temperature_k_range, label="hex")
+    burn_mwd = rng.uniform(*hx.burnup_mwd_kg_range, size=nA)
+    temp_k = rng.uniform(*hx.temperature_k_range, size=nA)
+    burn_mwd[-1] = 0.0                                # gap pseudo-assembly
+
+    G = len(xs_for_id(0).D)
+    ncol = n_xs_cols(G)
+    cross_sections = np.zeros((coords.shape[0], ncol))
     for n in range(coords.shape[0]):
         h = node_hex[n]
         depth = float(hex_depth[h]) if h >= 0 else 1.0   # gap = coolant, depth ignored
         m = int(material_state[n])
-        xs = np.array(xs_for_id(m, insert_frac=depth).as_row())
-        xs[5:7] *= temp[h]                                # temperature/density wiggle (nuSf)
-        if m in fuel_ids:                                 # directional burnup, fuel only
-            xs[5:7] *= (1.0 - burn[h])                    # fissile depletion
-            xs[2:4] *= (1.0 + hx.burnup_poison_coeff * burn[h])  # fission-product poison (Sr up)
-        cross_sections[n] = xs
+        bu = float(burn_mwd[h]) if m in fuel_ids else 0.0
+        cross_sections[n] = np.array(
+            xs_for_id(m, insert_frac=depth, burnup_mwd_kg=bu,
+                      temperature_k=float(temp_k[h]),
+                      core_rod_frac=core_rod_frac).as_row())
 
     # --- boundary = outer hex edges with no neighbouring assembly ---
     # For each hexagon edge, the neighbour (if any) sits at 2*mid - center. If no

@@ -4,8 +4,8 @@
 
 Build a Physics-Informed Graph Neural Operator (PI-GNO) for a 2D **multigroup neutron-diffusion eigenvalue problem**, discretized with **P1 finite elements**. Group count is **configurable G** (`PhysicsConfig.n_groups`; default G=2, byte-compatible with the original two-group data). The generator supports **two reactor types** (`reactor_type`), both flowing through the same solver / graph / model:
 
-- **`hex`** — a **Natrium-inspired sodium fast reactor**: a hexagonal-duct lattice (identical structured submesh per assembly + Delaunay-stitched sodium gaps). Material set (8, one-hot): fuel_inner, fuel_outer, primary_control, secondary_control, reflector, shield, **duct** (HT9 wall + sodium gap, homogenized), coolant. **Fast** spectrum (g1 high-fast, g2 slow-fast).
-- **`fhr`** — a **Kairos KP-FHR pebble bed** (annular, gFHR/NRC-faithful): a central graphite reflector column, a fueled pebble annulus (RSA-packed **fuel + graphite moderator pebbles**) in FLiBe, an outer graphite reflector, and a steel vessel. **4 B4C control elements sit in the OUTER REFLECTOR** (NRC ML21272A383: KP-FHR control inserts into the side graphite reflector — NOT the bed); **3 X-shaped shutdown elements insert into the inner bed**; both are rigid shapes in graphite-lined channels. Material set (7, one-hot): fuel_pebble, graphite_pebble, control_element, shutdown_element, reflector, coolant (FLiBe), vessel. **Thermal** spectrum (g1 fast, g2 thermal, ~0.625 eV cut). Each pebble = one homogenized node; recirculation/burnup + fuel:moderator ratio enter as dataset variability (frozen 2D states). Exact Hermes control-element diameter is proprietary → `r_ctrl` is a documented representative value (gFHR 5.2 cm rod proxy).
+- **`hex`** — a **Natrium-inspired sodium fast reactor**: a hexagonal-duct lattice (identical structured submesh per assembly + Delaunay-stitched sodium gaps). Material set (8, one-hot): fuel_inner, fuel_outer, primary_control, secondary_control, reflector, shield, **duct** (HT9 wall + sodium gap, homogenized), coolant. **Fast** spectrum (g1 high-fast, g2 slow-fast), split at **0.1 MeV**; `chi = (0.99, 0.01)`.
+- **`fhr`** — a **Kairos KP-FHR pebble bed** at published **gFHR** dimensions (Satvat et al. 2021 / INL VTB — Kairos' own non-proprietary KP-FHR surrogate, the only one with an open dimensional spec): a **cylindrical, full-diameter** RSA-packed bed of **fuel + graphite moderator pebbles** (R=120 cm) in FLiBe → 60 cm graphite side reflector → SS316H barrel + FLiBe downcomer + SS316H vessel (one homogenized ring). **NOT annular** — KP-FHR pebbles are buoyant and float up through the whole bed; there is no central reflector column. **10 B4C control elements sit in the SIDE REFLECTOR** (NRC KP-TR-024-NP Rev 0, ML24095A258: the reactivity control system inserts into engineered channels in the side graphite reflector — NOT the bed) in graphite-lined channels; **3 X-shaped shutdown elements insert DIRECTLY into the packed bed** (NRC), no thimble. Rod count follows gFHR because the bed radius does; Hermes as licensed has 4 control + 3 shutdown in a ~2 m³ core, so set `n_control=4` if you rescale to Hermes. Material set (7, one-hot): fuel_pebble, graphite_pebble, control_element, shutdown_element, reflector, coolant (FLiBe), vessel. **Thermal** spectrum (g1 fast, g2 thermal, 0.625 eV cut); `chi = (1.0, 0.0)`. Pebble = low-density graphite buoyancy core (r=1.38) + annular TRISO fuel shell (→1.80) + graphite shell (→2.00), 19.55 wt% **UCO** kernels at 0.22 TRISO packing. Each pebble = one homogenized node; recirculation/burnup + fuel:moderator ratio enter as dataset variability (frozen 2D states). Exact Hermes element geometry is proprietary → `r_ctrl` (2.6 cm) and `control_offset` (7.9 cm) are the published gFHR rod; shutdown-element size is scaled to the bed and documented as such.
 
 The XS row layout, node-feature width, and model dims are **schema-driven** from each sample's metadata (`n_groups`, `n_materials`, `node_feature_order`) — never hardcode them. Never say "thermal" for the `hex`/Natrium reactor (fast spectrum); the `fhr` reactor is genuinely thermal and named accordingly.
 
@@ -38,7 +38,12 @@ k_eff              scalar    reference eigenvalue
 flux               [N, G]    reference group fluxes (group-major)
 power_density      [N]       reference derived field
 geometry_metadata             reactor_type, n_groups, n_materials, layout,
-                             control/shutdown insertion, node/edge feature order
+                             control/shutdown insertion, node/edge feature order,
+                             xs_provenance (transport code + data library + branch
+                             grid + per-branch k_eff + Monte Carlo uncertainty +
+                             a `converged` flag; never absent -- a sample cannot
+                             exist without transport provenance)
+                             group_boundaries_ev, chi
 ```
 
 The node feature order is **schema-driven** (recorded in `geometry_metadata["node_feature_order"]`): `[x, y] + one-hot material (n_materials) + XS block (n_xs_cols(G)) + boundary_flag`. Material is ONE-HOT encoded, not an ordinal id, to avoid a spurious ordering between materials. The XS block order is `D(G), Sigma_r(G), down-scatter(G(G-1)/2), nuSigma_f(G)` (down-scatter-only). For the Natrium `hex` reactor at G=2 this is exactly the original 18-dim layout:
@@ -53,7 +58,28 @@ The node feature order is **schema-driven** (recorded in `geometry_metadata["nod
 
 The KP-FHR `fhr` reactor at G=2 is 17-dim (7 materials). Read the widths from metadata; never hardcode. `material_state` is stored separately as integer ids; only the node feature vector uses the one-hot block. N varies per sample.
 
+Group boundaries live in exactly one place, `xs_common.GROUP_BOUNDARIES_EV` — the OpenMC collapse, each material module's `CHI`, and `geometry_metadata["group_boundaries_ev"]` all read from it. Never restate a boundary in a docstring without changing it there, and never move a boundary without re-deriving the affected `CHI`: a cut and its fission spectrum are one physical statement, and splitting them is how the two silently disagreed before.
+
 `chi` is fixed nuclear data: incorporate it in `F`, not in node features. Preserve physical units and document normalization factors. Normalize only with statistics fitted on the training split; apply exactly the same transform to validation/test data and retain inverse transforms for reporting.
+
+## Cross-Section Provenance
+
+Cross sections are **always OpenMC-derived**. There is no hand-tuned fallback library and no `--dry-run`: `materials.py` / `materials_fhr.py` raise `xs_branch.MissingBranchTable` on first cross-section access if their branch table is absent, mis-typed, or collapsed on a different group structure than `xs_common.GROUP_BOUNDARIES_EV`. Running `xs_openmc.py` is a **prerequisite** for generating any data, not an upgrade path. Never reintroduce representative constants as a convenience — they are indistinguishable from physics once they are in a dataset.
+
+The table load is deliberately **lazy** (first XS access, not import). `xs_openmc.py` imports `openmc_models` → `geometry` → `materials` in order to *build* the table, so an import-time requirement deadlocks the bootstrap. Keep the material-id schema, one-hot encoding, `CHI`, and `AXIAL_BUCKLING_CM2` above that line and table-independent.
+
+The pipeline (`openmc_models.py`, `xs_depletion.py`, `xs_openmc.py`, `xs_branch.py`) is **offline**: it writes `xs_natrium.json` / `xs_fhr.json`, which the material modules load at import. The per-sample generator must never call OpenMC.
+
+Non-negotiables when touching that pipeline:
+
+- **Weight in situ.** Materials are tallied with `domain_type="material"` inside the full core. Never reintroduce infinite-medium unit cells for group collapse.
+- **Keep double heterogeneity.** Explicit TRISO inside explicit pebbles (`fhr`); explicit pin lattices inside ducts (`hex`). Smearing fuel into moderator destroys resonance self-shielding.
+- **The transport core must be the FEM core.** `openmc_models.py` imports `geometry.py`'s own role/control assignment; do not re-derive a parallel core map.
+- **`D = 1/(3*Sigma_tr)`** from a tallied transport cross section. Homogenize `Sigma_tr`, never `D` directly.
+- **Deplete one unit cell per fuel zone.** `hex` has two enrichment zones (`openmc_models.HEX_ENRICHMENT_WT_PCT`: fuel_inner 15.50, fuel_outer 19.75) and needs two depletion runs. The depleted composition **overrides** the fresh material in `_apply_composition`, so serving one zone's isotopics to the other silently deletes the enrichment zoning — which is what flattens radial power. `composition_at` therefore raises on a missing zone instead of falling back, and schema-v1 tables are rejected on load. Enrichments live in `openmc_models` only; never restate them in `xs_depletion`.
+- **Burnup and temperature are branch axes**, not multipliers. The legacy `xs_perturb` / `burnup_max` / `burnup_poison_coeff` / `temp_perturb` scale factors are **deleted**; Xe/Sm poison comes from depleted isotopics and Doppler + S(α,β) from the temperature branch. Sampled ranges must lie inside the branch grid — `xs_branch.check_axis_coverage` warns, because outside it every state clamps onto one point.
+- **Axial leakage enters once**, as `Bz^2` in `assemble_AF`. The transport models are axially reflective; do not also add axial leakage there.
+- **Record provenance and uncertainty** in every sample, and verify the diffusion model against continuous-energy transport with `validate_openmc.py` before claiming the labels are physical.
 
 ## Data Generation and Validation with the P1-FEM Hex-Core Solver
 

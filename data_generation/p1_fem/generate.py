@@ -52,18 +52,25 @@ def main():
         rng = np.random.default_rng(plan.seed)
         for i in range(plan.n_samples):
             if is_fhr:
-                # 80% ganged: all control elements at one shared height (normal
-                # symmetric operation). 20% independent: per-element depths (tilt /
-                # stuck-rod off-normal states) for real-world KP-FHR fidelity. Both
-                # draw from this split's disjoint range, so splits stay disjoint.
+                # BINARY per-element insertion: draw how many control rods /
+                # shutdown blades are IN from this split's disjoint count range,
+                # then WHICH ones uniformly (asymmetric patterns arise naturally).
+                # No intermediate depths -- see FHRSplitPlan: the gray-rod blend is
+                # step-like for black thermal absorbers (rod cusping), so only the
+                # two measured endpoint states are physical here.
                 nctrl = cfg.pebblecore.n_control
-                if rng.random() < plan.control_independent_frac:
-                    ic = rng.uniform(*plan.control_insert_range, size=nctrl).tolist()
-                else:
-                    ic = float(rng.uniform(*plan.control_insert_range))
-                ish = float(rng.uniform(*plan.shutdown_insert_range))
+                nshut = cfg.pebblecore.n_shutdown
+                n_c = int(rng.integers(plan.control_count_range[0],
+                                       plan.control_count_range[1] + 1))
+                n_s = int(rng.integers(plan.shutdown_count_range[0],
+                                       plan.shutdown_count_range[1] + 1))
+                ic = np.zeros(nctrl)
+                ic[rng.choice(nctrl, size=n_c, replace=False)] = 1.0
+                ish = np.zeros(nshut)
+                ish[rng.choice(nshut, size=n_s, replace=False)] = 1.0
                 gpf = float(rng.uniform(*plan.graphite_pebble_range))
-                knobs = dict(insert_control=ic, insert_shutdown=ish,
+                knobs = dict(insert_control=ic.tolist(),
+                             insert_shutdown=ish.tolist(),
                              graphite_pebble_frac=gpf)
             else:
                 knobs = dict(
