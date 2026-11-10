@@ -29,7 +29,17 @@ def validate_sample(sample: dict, *, residual_tol: float = 1e-6) -> None:
     G = int(meta["n_groups"])
     n_mat = int(meta["n_materials"])
     assert C == n_xs_cols(G), f"cross_sections width {C} != n_xs_cols({G})={n_xs_cols(G)}"
-    expected_node_dim = 2 + n_mat + n_xs_cols(G) + 1
+    # Base layout is [x,y] + one-hot material + G-group XS + boundary_flag. A
+    # dataset may append trailing scalar columns (currently `bc_alpha` on the
+    # boundary-condition-study sets), so the authority on width is the sample's
+    # own node_feature_order, not the base formula -- and any mismatch between
+    # the two is itself an error worth catching.
+    base_node_dim = 2 + n_mat + n_xs_cols(G) + 1
+    order = meta.get("node_feature_order")
+    expected_node_dim = len(order) if order else base_node_dim
+    assert expected_node_dim >= base_node_dim, (
+        f"node_feature_order lists {expected_node_dim} columns, fewer than the "
+        f"{base_node_dim} the base schema requires")
 
     # shapes
     assert sample["coordinates"].shape == (N, 2)

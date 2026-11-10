@@ -1,0 +1,1823 @@
+%=========================================================================
+%  Annals of Nuclear Energy (Elsevier) manuscript
+%  Class: elsarticle  -- available by default on Overleaf.
+%  Recommended submission build: \documentclass[preprint,review,12pt]{elsarticle}
+%  (double spaced, line numbers, figures/tables at end) for first submission.
+%  Use [preprint,12pt] for a readable single-spaced PDF while drafting.
+%
+%  Bibliography: refs.bib, BibTeX, elsarticle-harv (author-year) style.
+%  \todocite{...} marks a claim that still needs a source. It renders in bold
+%  in the draft PDF -- grep for "CITE:" and clear them all before submission.
+%=========================================================================
+%=========================================================================
+%  HIGHLIGHTS -- TODO after results. Elsevier requires these as a SEPARATE
+%  file at submission: 3-5 bullets, max 85 characters each including spaces.
+%
+%  * TODO
+%  * TODO
+%  * TODO
+%=========================================================================
+\documentclass[preprint,12pt]{elsarticle}
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage[section]{placeins}
+\usepackage{lineno}
+\linenumbers
+
+% --- convenience macros for the recurring neutronics symbols -------------
+\newcommand{\keff}{k_{\mathrm{eff}}}
+\newcommand{\Sig}[1]{\Sigma_{\mathrm{#1}}}
+\newcommand{\nuSigf}{\nu\Sigma_{\mathrm{f}}}
+\newcommand{\Bz}{B_z^{2}}
+\newcommand{\MWdkg}{\mathrm{MWd/kgHM}}
+
+% visible marker for a claim that still needs a source
+\newcommand{\todocite}[1]{\textbf{[CITE: #1]}}
+
+\journal{Annals of Nuclear Energy}
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{Physics-Informed Graph Neural Operators for Heterogeneous Two-Dimensional
+Reactor Neutronics}
+
+% TODO: author list. One \author per person in final order, each keyed to an
+% \affiliation; \corref{cor1} on the corresponding author only.
+%
+% \author[aff1]{Given Name Surname}
+% \ead{email@institution.edu}
+% \cortext[cor1]{Corresponding author.}
+%
+% \affiliation[aff1]{organization={Department},
+%                    city={City}, state={ST}, postcode={00000}, country={USA}}
+
+%-------------------------------------------------------------------------
+\begin{abstract}
+% TODO: write after results are in. Max ~250 words, no references,
+% no undefined abbreviations. Structure: problem, approach, benchmarks,
+% key quantitative findings, significance.
+\end{abstract}
+
+\begin{keyword}
+Neutron diffusion \sep Graph neural operator \sep Physics-informed machine
+learning \sep Operator learning \sep Digital twin \sep Sodium fast reactor \sep
+Fluoride-salt-cooled high-temperature reactor
+\end{keyword}
+
+\end{frontmatter}
+
+%-------------------------------------------------------------------------
+\section*{Nomenclature}
+\addcontentsline{toc}{section}{Nomenclature}
+\begin{tabbing}
+\hspace{2.6cm}\= \kill
+$A$ \> neutron loss operator (leakage, removal, in-scatter), cm$^{-1}$ \\
+$F$ \> neutron production (fission) operator, cm$^{-1}$ \\
+$\phi_g$ \> scalar neutron flux in group $g$, cm$^{-2}$\,s$^{-1}$ \\
+$\keff$ \> effective multiplication factor, -- \\
+$D_g$ \> diffusion coefficient in group $g$, cm \\
+$\Sig{tr}$ \> transport cross section, cm$^{-1}$ \\
+$\Sig{a}$ \> absorption cross section, cm$^{-1}$ \\
+$\Sig{r}$ \> removal cross section, cm$^{-1}$ \\
+$\Sigma_{\mathrm{s},g'\rightarrow g}$ \> group transfer cross section, cm$^{-1}$ \\
+$\nuSigf$ \> fission neutron production cross section, cm$^{-1}$ \\
+$\chi_g$ \> fission spectrum fraction in group $g$, -- \\
+$\Bz$ \> axial geometric buckling, cm$^{-2}$ \\
+$E_{\mathrm{f}}$ \> energy released per fission, J \\
+$f$ \> control/shutdown element insertion fraction, -- \\
+$\beta$ \> boundary albedo, $J^- = \beta J^+$, -- \\
+$\alpha$ \> Marshak partial-current Robin coefficient, -- \\
+$s$ \> hexagonal submesh refinement level, -- \\
+$G$ \> number of energy groups, -- \\
+$N,\;T,\;B,\;E$ \> numbers of mesh nodes, triangles, boundary edges, graph edges, -- \\
+$V_i$ \> lumped nodal volume of node $i$, cm$^{3}$ \\
+$w_{ig}$ \> volume-integrated group flux weight of constituent $i$, cm\,s$^{-1}$ \\
+$\mathcal{R}$ \> discrete PDE residual, -- \\
+$\mathcal{L}$ \> training loss, -- \\
+\end{tabbing}
+
+\noindent\textit{Abbreviations:} CE, continuous energy; DeepONet, deep operator
+network; FEM, finite element method; FHR, fluoride-salt-cooled
+high-temperature reactor; FIMA, fissions per initial metal atom; GNN, graph
+neural network; GNO, graph neural operator; HALEU, high-assay low-enriched
+uranium; IBC, initial and boundary conditions; MLP, multilayer perceptron;
+PDE, partial differential equation; PI-GNO, physics-informed graph neural
+operator; PINN, physics-informed neural network; SFR, sodium fast reactor;
+V\&V, verification and validation.
+
+%=========================================================================
+\section{Introduction}
+\label{sec:intro}
+
+%--------------------------------------------------------------
+\subsection{Motivation}
+\label{sec:motivation}
+
+Global electricity demand continues to rise, as nations pursue widespread
+electrification while simultaneously expanding computational infrastructure.
+The emergence of large-scale artificial intelligence systems,
+high-performance computing facilities, and hyperscale data centers has
+introduced energy requirements that are expected to grow substantially over
+the coming decades. Continued reliance on fossil fuels presents environmental
+and economic challenges, including greenhouse gas emissions, air pollution, and
+long-term energy security concerns. Consequently, interest in scalable
+low-carbon sources capable of providing reliable baseload power has increased.
+Nuclear energy remains one of the few mature technologies capable of producing
+large amounts of carbon-free electricity in high capacity factors, making
+it a central component of future energy systems.
+
+The growing importance of nuclear power has motivated research into advanced
+monitoring, control, and safety technologies for both the operating fleet and
+next-generation designs. Among these, digital twins have emerged as a
+framework for integrating simulation, sensor data, and predictive analytics
+into a unified representation of a physical system \citep{kobayashi2024}. By
+providing real-time
+estimates of reactor state and near-term system behavior, digital twins can
+improve situational awareness and support decision-making throughout the
+reactor lifecycle. Their effectiveness, however, depends on the availability
+of computational models that are both sufficiently accurate and capable of
+operating at near real-time speed.
+
+Many of the governing equations encountered in reactor physics and multiphysics
+simulation are partial differential equations (PDEs), including neutron
+diffusion, neutron transport, heat conduction and thermal-hydraulic balance
+equations. Traditional numerical approaches such as the finite difference
+method, the finite element method (FEM) and Monte Carlo methods provide highly
+accurate solutions, but require substantial computational resources,
+particularly when repeated evaluations are needed for uncertainty
+quantification, design optimization, or real-time monitoring. Data-driven
+surrogates address this cost directly: they still rely on conventional solvers
+to generate training data, but evaluate the same problems orders of magnitude
+faster once trained, with reported speedups of up to approximately
+$4\times10^{3}$ relative to the reference solver
+\todocite{source for the $\sim$4000$\times$ speedup figure}.
+
+%--------------------------------------------------------------
+\subsection{Related work}
+\label{sec:related}
+
+The reactor core is among the most important subsystems to analyze for any
+nuclear reactor. As an example of data-driven core analysis, an artificial
+neural network has been trained on 10{,}000 randomized core configurations to
+learn reactivity evolution and cycle length \citep{palmi2025}. Purely
+data-driven methods, however, are susceptible to a loss of physical
+consistency, and their black-box architecture is difficult to analyze for
+verification and validation (V\&V). Physics-informed modeling offers one route
+to reintroducing deterministic structure into such models.
+
+Physics-informed neural networks (PINNs) construct the loss from a standard
+mean-squared-error term augmented by the residual of the governing equations,
+allowing the PDE and its boundary conditions to be incorporated directly into
+the optimization objective \citep{raissi2019}. In neutronics, PINNs have
+been applied to the point kinetics equations to predict core power evolution by
+embedding the residual of the point kinetics equations together with the
+corresponding initial and boundary conditions (IBC) in the loss
+\citep{schiassi2022}. Incorporating these residuals encourages the network
+to satisfy the governing equations and associated IBC during training, which
+improves physical consistency and may support future V\&V workflows.
+
+Whereas PINNs improve physical consistency through PDE-constrained training,
+neural operators are designed to learn solution operators for entire families
+of PDEs. Unlike conventional networks, which learn mappings between
+finite-dimensional vectors, neural operators learn mappings between function
+spaces \citep{kovachki2023}. This renders the learned map
+discretization-invariant and enables generalization across a family of PDE
+parameterizations without training a separate model for each configuration.
+Reactor analysis frequently requires repeated evaluation across varying
+material distributions, control-rod positions and operating conditions, which
+makes reactor neutronics a natural candidate for operator learning. A deep
+operator network (DeepONet) has been shown to outperform a fully convolutional
+network and a convolutional neural network for two-dimensional neutron
+transport in a maze geometry \citep{kobayashi2024}.
+
+While neural operators perform strongly on structured computational domains,
+reactor cores are inherently heterogeneous systems composed of fuel
+assemblies, control rods, burnable poisons, reflector regions and coolant
+channels. The associated neutronics calculations are therefore performed on
+irregular meshes, where material interfaces, geometric discontinuities and
+localized feedback effects strongly influence the flux distribution. A
+representation that naturally encodes geometric connectivity and heterogeneous
+material distribution is consequently desirable.
+
+Graph neural operators (GNOs) represent reactor discretizations by treating
+mesh cells, material regions or sensor locations as nodes connected through
+physically meaningful interactions \citep{li2020}. By encoding spatial
+locations, mesh cells or sensor measurements as nodes and their physical
+interactions as edges, GNOs learn solution operators through message passing,
+and they have demonstrated strong performance on PDEs defined over irregular
+geometries and unstructured domains \citep{li2020}. Physics- and
+geometry-aware graph neural operators have more recently been trained with
+PDE-constrained objectives on both regular and irregular domains
+\citep{sarkar2025}. Those developments, however, have been demonstrated on
+canonical benchmark PDEs. Application to heterogeneous reactor neutronics --
+where the operator must act on a strongly discontinuous material field, respect
+material interfaces, and return an eigenvalue in addition to a field -- remains
+comparatively unexplored.
+
+%--------------------------------------------------------------
+\subsection{Contribution and outline}
+\label{sec:contribution}
+
+This work investigates a physics-informed graph neural operator (PI-GNO)
+framework for heterogeneous reactor neutronics, combining operator learning,
+graph-based geometric representations, and PDE-constrained training to
+approximate neutronics solutions on irregular reactor geometries. The specific
+contributions are as follows.
+
+\begin{enumerate}
+\item A PI-GNO architecture that learns the solution operator of the
+      heterogeneous multigroup neutron diffusion eigenvalue problem on
+      unstructured reactor meshes, predicting group fluxes and $\keff$ and
+      recovering nodal power analytically from the predicted flux rather than
+      through an additional learned head.
+\item A training objective in which the residual of the assembled discrete
+      diffusion eigenvalue problem acts as an explicit physics constraint,
+      evaluated on the same finite element operators used to label the data, so
+      that the Marshak boundary condition is enforced through the operator
+      rather than as a separate penalty.
+\item A transport-traceable database for two heterogeneous benchmarks -- a
+      sodium-cooled fast reactor and a fluoride-salt-cooled pebble-bed reactor
+      -- in which every group constant is collapsed from evaluated nuclear data
+      by full-core continuous-energy Monte Carlo with in-situ spectral
+      weighting, resolved double heterogeneity, transport-corrected diffusion
+      coefficients and burnup, temperature and control-insertion branch cases.
+\item A verification harness that solves identical core states with both the
+      labeling diffusion model and full-core continuous-energy transport,
+      reporting the reactivity bias, control worth and radial power deviation.
+\item A controlled benchmark against a Fourier neural operator, a deep operator
+      network and a mesh graph network, in which all four models share one
+      training loop, one parameter budget, one learning-rate grid and, for the
+      accuracy comparison, a purely data-driven objective, so that no result is
+      attributable to unequal treatment. The comparison is made along three
+      axes -- irregular geometry, discretization transfer and boundary-condition
+      transfer -- and each is reported against a measured, model-independent
+      error floor: the rasterization loss the grid baseline is forced to incur,
+      and the finite element solutions' own mesh dependence.
+\end{enumerate}
+% NOTE: this list states scope, not findings, so it is safe to keep now. But
+% item 4 promises an ablation that has not been run yet -- re-check every item
+% against the finished results before submission and cut anything unsupported.
+
+The remainder of this paper is organized as follows. Section~\ref{sec:method}
+describes the benchmark problems, the data generation and verification
+pipeline, the PI-GNO architecture and the evaluation methodology.
+Section~\ref{sec:results} presents the results, and Section~\ref{sec:conclusions}
+summarizes the conclusions.
+
+%=========================================================================
+\section{Methodology}
+\label{sec:method}
+
+%--------------------------------------------------------------
+\subsection{General framework}
+\label{sec:framework}
+
+This work proposes a physics-informed graph neural operator framework for
+approximating the solution operator associated with heterogeneous multigroup
+neutron diffusion eigenvalue problems on irregular reactor geometries. The
+methodology comprises six stages: (i) definition of benchmark reactor
+configurations; (ii) generation of high-fidelity reference solutions with a
+finite element diffusion solver; (iii) construction of graph representations
+from the discretized reactor meshes; (iv) database generation and
+preprocessing; (v) training of the proposed PI-GNO architecture; and
+(vi) evaluation against baseline machine learning and neural operator models.
+The complete workflow is illustrated in Fig.~\ref{fig:workflow}.
+
+\begin{figure}[htbp]
+\centering
+% \includegraphics[width=\linewidth]{figures/workflow.pdf}
+\framebox[\linewidth][c]{\rule{0pt}{5cm}\textsc{Figure placeholder: end-to-end workflow}}
+\caption{End-to-end workflow of the proposed PI-GNO framework, from benchmark
+definition and offline nuclear data generation through finite element
+reference solutions, graph construction and physics-informed training to
+evaluation against baseline architectures.}
+\label{fig:workflow}
+\end{figure}
+
+Reactor cores are heterogeneous systems composed of fuel assemblies, control
+rods, reflector regions, shielding materials, and coolant channels that are not
+naturally represented on uniform computational grids. The proposed framework
+therefore combines neural operator learning with graph-based representations,
+allowing the model to learn the governing diffusion operator while preserving
+the geometric connectivity of the heterogeneous core. This combination is
+particularly suited to digital twin applications that require both rapid
+inference and the ability to operate on complex reactor geometries.
+
+%--------------------------------------------------------------
+\subsection{Reactor physics and benchmark problems}
+\label{sec:benchmarks}
+
+Two distinct two-dimensional heterogeneous multigroup neutron diffusion
+eigenvalue problems are considered, representative of a sodium-cooled fast
+reactor and a fluoride-salt-cooled pebble-bed reactor.
+
+The first benchmark is inspired by the Natrium-class sodium fast reactor
+(SFR). To represent its neutron spectrum, a configurable number of energy
+groups $G$ is employed in which all groups resolve the fast spectrum -- a
+high-fast and a slow-fast group at the default $G=2$ -- rather than the
+conventional fast--thermal approximation used for light water reactors. The
+second benchmark is inspired by the Kairos Power fluoride-salt-cooled
+high-temperature reactor (KP-FHR). It also uses a configurable group count,
+but resolves a genuinely thermal spectrum, with a fast and a thermal group
+separated at a cutoff near 0.625~eV at the default $G=2$. Both reactors pass
+through an identical solver, graph-construction and model pipeline; the group
+count, material set and feature layout are schema-driven from each sample's
+metadata rather than hard coded.
+
+The governing equations are formulated as the coupled generalized eigenvalue
+problem
+\begin{equation}
+A\,\boldsymbol{\phi} \;=\; \frac{1}{\keff}\,F\,\boldsymbol{\phi},
+\label{eq:eigen}
+\end{equation}
+where $A$ is the neutron loss operator incorporating leakage, removal and
+in-scattering, $F$ is the fission production operator, $\boldsymbol{\phi}$ is
+the group-wise neutron flux and $\keff$ is the effective multiplication factor.
+In continuous form, the multigroup diffusion balance for group $g$ reads
+\citep{duderstadt1976,stacey2007}
+\begin{equation}
+-\nabla\!\cdot\!\big(D_g \nabla \phi_g\big)
++ \Sig{r,\mathit{g}}\,\phi_g
+= \sum_{g'\neq g} \Sigma_{\mathrm{s},g'\rightarrow g}\,\phi_{g'}
++ \frac{\chi_g}{\keff}\sum_{g'} \nu\Sigma_{\mathrm{f},g'}\,\phi_{g'} .
+\label{eq:diffusion}
+\end{equation}
+
+The two benchmark configurations comprise heterogeneous material distributions
+appropriate to each reactor, summarized in Table~\ref{tab:materials}. The
+sodium fast reactor consists of inner and outer fuel, primary and secondary
+control assemblies, reflector, shield, homogenized duct (HT9 wall plus sodium
+gap) and sodium coolant. The pebble-bed reactor consists of fuel and
+graphite-moderator pebbles, control and shutdown elements, graphite reflector,
+FLiBe coolant and a steel vessel. Vacuum boundary conditions are imposed on the
+outer boundary of both benchmarks. The quantities of interest predicted by the
+framework are the group-wise neutron flux distribution, $\keff$, and the nodal
+power density computed directly from the predicted flux.
+
+\begin{table}[htbp]
+\centering
+\caption{Material sets of the two benchmark problems.}
+\label{tab:materials}
+\begin{tabular}{@{}llc@{}}
+\toprule
+Benchmark & Material types & Count \\
+\midrule
+Sodium fast reactor (hex) &
+\begin{tabular}[t]{@{}l@{}}
+fuel\_inner, fuel\_outer, primary\_control,\\
+secondary\_control, reflector, shield, duct, sodium
+\end{tabular} & 8 \\[2.2ex]
+Pebble-bed reactor (FHR) &
+\begin{tabular}[t]{@{}l@{}}
+fuel\_pebble, graphite\_pebble, control\_element,\\
+shutdown\_element, reflector, FLiBe, vessel
+\end{tabular} & 7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+To evaluate robustness and generalization, multiple scenarios are considered
+for each reactor, including variations in geometry, material layout, reflector
+thickness and control- and shutdown-element insertion depth. For the pebble bed
+the fuel-to-moderator pebble ratio is additionally varied as a reactivity
+lever. These variations enable assessment of the ability of each model to learn
+an entire family of neutron diffusion operators rather than individual reactor
+solutions.
+
+%--------------------------------------------------------------
+\subsection{Data generation}
+\label{sec:datagen}
+
+Data generation is split into an offline nuclear data stage and a per-sample
+generation stage. The offline stage runs continuous-energy Monte Carlo
+transport in OpenMC once per reactor -- unit-cell depletion followed by
+full-core branch-case transport -- and caches a self-describing group-constant
+table. The per-sample stage builds a meshed core state, looks its cross
+sections up in that table, solves the multigroup diffusion eigenvalue problem
+with P1 finite elements and emits the graph tensors. The per-sample stage never
+calls a transport code, and no hand-tuned cross-section library exists anywhere
+in the pipeline: a missing or mis-structured table raises a hard error, so
+every constant in every sample is traceable to an evaluated nuclear data
+library.
+
+\subsubsection{Geometry generation}
+\label{sec:geometry}
+
+Reference solutions are generated for two reactor geometries, both discretized
+with P1 finite elements and both passing through the same downstream solver and
+graph pipeline. Principal dimensions are summarized in
+Table~\ref{tab:geometry}.
+
+\paragraph{Sodium fast reactor (hexagonal lattice)}
+The core is constructed on a hierarchical hexagonal-duct lattice at an 18.7~cm
+assembly pitch with a 0.37~cm HT9 duct wall and a 0.40~cm inter-assembly sodium
+gap. Each assembly is discretized with an identical structured triangular
+submesh, establishing spatial invariance across physically identical
+assemblies; the outer ring, occupying the outer 18\% of the hexagon radius, is a
+homogenized HT9-duct-plus-sodium-gap material, following standard
+hexagonal-lattice homogenization practice \citep{scale}. The submesh is
+parameterized by a refinement level $s$, the only knob in the pipeline that
+changes the discretization without changing the physics and therefore the axis
+of the resolution-transfer study of Section~\ref{sec:datafamilies}. Level $s=0$
+is a 13-node, 18-triangle fan interior wrapped by an annular ring, and is the
+level at which the main datasets are generated; $s\geq1$ builds $R=2s$
+concentric rings, giving $1+3R(R+1)$ nodes and $6R^{2}$ triangles per assembly,
+that is 19, 61 and 127 nodes per assembly at $s=1,2,3$. Level 0 is a different
+mesh topology -- six nodes on its single ring, against $6k$ on ring $k$ of the
+general scheme -- so it is held out of the refinement family rather than treated
+as its coarsest member, and the level is recorded per sample because the node
+count alone does not identify it. Explicit sodium nodes are placed at the
+midpoints between neighboring assembly centers, and the inter-assembly gaps
+are stitched with a Delaunay triangulation \citep{delaunay1934} over the
+duct-ring and gap nodes,
+retaining only triangles whose centroids fall outside every hexagon and whose
+longest edge is shorter than the lattice pitch, so that the gap is a resolved
+physical region rather than a blurred gradient.
+
+Radial roles are assigned by ring index: inner-enrichment fuel,
+outer-enrichment fuel, reflector rings, then shield rings, with nine primary
+and four secondary control positions -- the docketed Natrium counts
+\todocite{Natrium core map: assembly and control-assembly counts} --
+deterministically replacing selected fuel positions. Radial enrichment zoning
+places the higher enrichment in the outer zone, 19.75~wt\% $^{235}$U against
+15.50~wt\% in the inner zone, because the fast-spectrum periphery leaks
+strongly and requires additional fissile inventory to flatten the radial power
+profile. Reflector- and shield-ring counts and the enrichment-boundary ring
+vary per sample. The domain boundary is the set of assembly edges without a
+neighboring assembly, which carries the Marshak condition of
+Section~\ref{sec:solver}, reducing to vacuum at zero albedo.
+
+\paragraph{Pebble-bed reactor (FHR)}
+The core is constructed as a full-diameter cylindrical pebble bed at the
+published generic FHR (gFHR) dimensions
+\todocite{gFHR dimensional specification / benchmark}, the non-proprietary
+KP-FHR surrogate and the only core in that family with an open dimensional
+specification. The
+core is explicitly not annular: KP-FHR pebbles are buoyant and float upward
+through the entire bed cross-section, so no central reflector column is
+present. The radial build is a pebble bed to $R=120$~cm, a 60~cm solid graphite
+side reflector to $R=180$~cm, then an SS316H barrel (2~cm), FLiBe downcomer
+(5~cm) and SS316H reactor vessel (4~cm), carried as a single homogenized vessel
+ring to $R=191$~cm. The 309.47~cm active height enters the two-dimensional
+model only through the transverse buckling and never as an in-plane dimension.
+
+Pebbles of 2.0~cm radius are placed by random sequential adsorption
+\todocite{random sequential adsorption packing} across the
+bed and homogenized as one node per pebble; a per-sample fraction of 0.08--0.22
+are moderator-only graphite pebbles, which is a physical KP-FHR reactivity
+lever because it sets the carbon-to-heavy-metal ratio. Interstitial FLiBe nodes
+are placed to reproduce the physical pebble-to-coolant volume split of
+approximately 60:40. Ten B$_4$C control elements of 2.6~cm radius, centered
+7.9~cm outboard of the bed edge, sit in the side graphite reflector, each a
+rigid filled 16-node disk inside a 1.6~cm graphite channel lining, following
+the NRC KP-FHR core design and analysis methodology topical report
+\citep{kpfhr2024}, in which the reactivity control system
+inserts into engineered channels in the side reflector rather than into the
+bed. Three X-shaped B$_4$C shutdown elements insert directly into the packed
+bed with no graphite thimble, since direct pebble and FLiBe contact is what
+gives the reactivity shutdown system its worth, and the pebble packer excludes
+their inflated footprints so that pebbles seat against the blades. Element
+counts and insertion locations follow the licensed design; element geometry is
+taken from the published gFHR rod where the licensed dimensions are
+proprietary, and the shutdown-blade size is scaled to the bed and documented as
+such. The full node cloud is triangulated with a single Delaunay triangulation
+and the boundary is its free-edge set.
+
+Both benchmarks are inspired by publicly available descriptions of the
+respective reactors. Dimensions are the published gFHR values for the pebble
+bed and representative HALEU metal-fuel SFR values for the fast reactor, whose
+vendor core map is not in the public record; where a licensed dimension is
+proprietary, a documented non-proprietary surrogate is used and recorded in the
+sample metadata. Cross sections, by contrast, are never representative: they
+are generated from evaluated nuclear data as described in
+Sections~\ref{sec:depletion}--\ref{sec:groupconstants}.
+
+\begin{table}[htbp]
+\centering
+\caption{Principal geometric and modelling parameters of the two benchmarks.}
+\label{tab:geometry}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Parameter & Sodium fast reactor & Pebble-bed reactor \\
+\midrule
+Lattice type              & Hexagonal duct lattice        & Packed cylindrical bed \\
+Assembly pitch            & 18.7 cm                       & -- \\
+Duct wall / gap           & 0.37 cm HT9 / 0.40 cm Na      & -- \\
+Pebble radius             & --                            & 2.0 cm \\
+Bed outer radius          & --                            & 120 cm \\
+Side reflector            & Variable ring count           & 60 cm graphite (to $R=180$ cm) \\
+Vessel ring               & Shield rings (variable)       & 2 cm barrel + 5 cm FLiBe + 4 cm vessel \\
+Outer radius              & Lattice-dependent             & 191 cm \\
+Active height             & --                            & 309.47 cm (buckling only) \\
+Control elements          & 9 primary, 4 secondary        & 10 B$_4$C in side reflector \\
+Shutdown elements         & --                            & 3 X-shaped B$_4$C in bed \\
+Enrichment ($^{235}$U)    & 15.50 / 19.75 wt\% (in/out)   & gFHR specification \\
+Moderator pebble fraction & --                            & 0.08--0.22 \\
+Axial buckling $\Bz$      & $5.4\times10^{-4}$ cm$^{-2}$  & $1.0\times10^{-4}$ cm$^{-2}$ \\
+Mesh refinement level $s$ & 0 (main), 1--3 (transfer)     & -- \\
+Core size                 & 217--271 assemblies, 3421 nodes & $\approx$1730 pebbles, 7098 nodes \\
+Boundary condition        & Marshak, albedo $\beta$       & Marshak vacuum \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Unit-cell depletion}
+\label{sec:depletion}
+
+Fuel burnup is a dataset axis, so fuel isotopics as a function of burnup are
+computed rather than assumed. Following standard lattice-physics practice
+\citep{scale}, a representative unit cell is depleted with
+\texttt{openmc.deplete} \citep{romano2021} using a coupled operator and a
+predictor integrator, and the resulting nuclide
+inventories are applied to the full-core spectrum calculation; only the
+isotopics originate in the unit cell, while the group-collapse spectrum remains
+the full-core one. For the pebble bed the cell is a single fuel pebble with its
+explicit TRISO lattice inside a reflective FLiBe cell sized such that the pebble
+volume fraction equals the bed packing fraction, so that the pebble sees its
+in-bed moderator-to-fuel ratio. For the fast reactor the cell is a single fuel
+assembly with an explicit 217-pin lattice (U--10Zr slug, sodium bond, HT9 clad)
+inside a reflective HT9 duct.
+
+One cell is depleted per fuel zone. The fast reactor has two enrichment zones
+and therefore requires two independent depletion calculations, because an
+assembly at 15.50~wt\% reaches a different inventory at a given burnup than one
+at 19.75~wt\% -- more plutonium relative to remaining $^{235}$U, and a
+different fission-product loading per unit fissile -- and because the depleted
+composition overrides the fresh material in the transport model, serving one
+zone's isotopics to the other would silently erase the enrichment zoning and
+flatten the radial power. The tables are therefore keyed by FEM fuel material,
+a missing zone raises an error rather than falling back, and the single-zone
+table schema is rejected on load. The pebble bed has a single fuel material and
+therefore requires one calculation. Heavy-metal volumes are set analytically
+from the resolved geometry, that is from kernel and pin counts, rather than by
+stochastic volume calculation.
+
+The production tables cover 0, 2, 20, 40 and 60~$\MWdkg$ for the fast reactor
+(ENDF/B-VIII.0 fast chain \citep{brown2018}, 45~W/gHM) and 0, 2, 20, 50, 90,
+130, 160 and
+190~$\MWdkg$ for the pebble bed (ENDF/B-VIII.0 thermal chain, 30~W/gHM), the
+latter reaching the published gFHR peak discharge burnup of approximately 20\%
+FIMA. Every grid includes an early point near 2~$\MWdkg$ so that downstream
+branch cases interpolate past $^{135}$Xe and $^{149}$Sm equilibrium rather than
+across that step change; the sampled burnup ranges carry a floor of
+2~$\MWdkg$ for the same reason, since an operating core contains no
+xenon-free fuel. Compositions are interpolated linearly in atom density between
+depletion points and clamped, never extrapolated, outside the grid.
+
+\subsubsection{Full-core transport group constants}
+\label{sec:groupconstants}
+
+Multigroup constants are collapsed from continuous-energy ENDF/B-VIII.0 data
+\citep{brown2018} by OpenMC \citep{romano2013} eigenvalue transport on
+full-core models that mirror the FEM cores. The
+transport models import the role and control assignment of the FEM geometry
+modules themselves, so the transport core is the FEM core rather than a
+parallel re-derivation of it. Four properties make the resulting constants
+defensible.
+
+\begin{description}
+\item[In-situ weighting.] Every material is tallied with
+\texttt{domain\_type="material"} inside the assembled full core, so that
+\begin{equation}
+\Sigma_g \;=\; \frac{\displaystyle\int_{E_g} \Sigma(E)\,\phi(E)\,\mathrm{d}E}
+                    {\displaystyle\int_{E_g} \phi(E)\,\mathrm{d}E}
+\label{eq:collapse}
+\end{equation}
+uses the spectrum that the material actually experiences. Infinite-medium unit
+cells are used nowhere in the collapse: an infinite reflective box of B$_4$C
+driven by a Watt source bears no relationship to the spectrum seen by a
+reflector-adjacent control element, and its absorption constants are wrong by a
+large factor in a thermal system.
+
+\item[Double heterogeneity.] Resonance self-shielding is a geometric effect, so
+fuel is resolved explicitly: TRISO particle lattices (UCO kernel, buffer, IPyC,
+SiC, OPyC) inside explicit pebbles with a low-density buoyancy core and an
+annular fuel shell for the pebble bed, and explicit hexagonal pin lattices
+inside each duct for the fast reactor. Constituents share a single universe per
+kind, instantiated per pebble or per assembly.
+
+\item[Transport-corrected diffusion.] The diffusion coefficient is taken as
+$D = 1/(3\Sig{tr})$ \citep{duderstadt1976} from a tallied transport cross
+section, not from a
+flux-weighted total cross section.
+
+\item[Branch cases rather than multipliers.] Burnup, temperature and control
+insertion are each represented by a genuine transport branch: depleted
+isotopics from Section~\ref{sec:depletion}, true Doppler broadening and
+$S(\alpha,\beta)$ thermal scattering at the branch temperature, and rodded
+versus unrodded cores with the absorber channels filled by either B$_4$C or the
+physical follower (sodium for the fast reactor, FLiBe for the pebble bed).
+\end{description}
+
+For each branch, the model tallies transport, absorption, fission, fission
+neutron production, the $\nu$-scatter matrix -- which carries $(n,2n)$
+multiplication, as the diffusion balance requires -- and $\chi$ over the group
+structure, together with an explicit per-material group flux used as the
+homogenization weight. Group boundaries are defined in exactly one place in the
+code and drive the collapse, the fission spectra and the sample metadata alike:
+0.1~MeV for the fast reactor, near the flux peak and above the $^{238}$U
+inelastic threshold so that the second group captures the slowing-down tail in
+which control worth resides, and 0.625~eV for the thermal pebble bed.
+
+The group count $G$ is a configuration parameter rather than a fixed choice, and
+a second, finer structure is tabulated for the fast reactor in order to test
+whether its two-group collapse is what limits the accuracy of the labels. That
+structure is deliberately \emph{nested} in the two-group one: the 0.1~MeV cut is
+retained and two further cuts are added at 1.353~MeV and 9.1188~keV, both
+lethargy-grid points, so that the four-group indices $\{1,2\}$ sum exactly to the
+old fast group and $\{3,4\}$ to the old second group. The added cuts isolate
+$^{238}$U threshold fission and high-energy inelastic scattering above
+1.353~MeV, where $\nu$ and $\chi$ are hardest, and separate the
+unresolved-resonance capture range from the resolved resonances -- sodium at
+2.85~keV and the structural iron and chromium -- where the capture-to-fission
+ratio climbs most steeply and rod and reflector worth concentrate. Because the
+partition is a refinement of the same partition rather than a different one, any
+difference between the two is attributable to group resolution alone. The
+corresponding four-group fission spectrum is derived from the same Watt spectrum
+as the two-group value and collapses consistently with it, and a separate
+group-constant table is generated on this structure with the identical full-core
+branch procedure. Section~\ref{sec:verification} reports what that comparison
+measures. The pebble bed is left at $G=2$ on purpose, since its two-group bias is
+already small and needs no refinement.
+
+Resolved constituents are then flux-volume homogenized back onto the single FEM
+material carried by each mesh node, following standard assembly-homogenization
+practice \citep{scale}. Reaction rates are additive, so the
+rate-conserving homogenized constant is
+\begin{equation}
+\Sigma_{\mathrm{hom},g} \;=\;
+\frac{\sum_i w_{ig}\,\Sigma_{ig}}{\sum_i w_{ig}},
+\qquad
+w_{ig} = \int_{V_i}\!\!\int_{E_g} \phi\,\mathrm{d}E\,\mathrm{d}V ,
+\label{eq:homog}
+\end{equation}
+with $w_{ig}$ the volume-integrated group flux in constituent $i$. The scatter
+matrix is weighted by the incoming-group flux, and the diffusion coefficient is
+homogenized through its transport cross section,
+\begin{equation}
+\Sigma_{\mathrm{tr,hom},g} = \frac{\sum_i w_{ig}\,\Sigma_{\mathrm{tr},ig}}{\sum_i w_{ig}},
+\qquad
+D_{\mathrm{hom},g} = \frac{1}{3\,\Sigma_{\mathrm{tr,hom},g}},
+\label{eq:dhomog}
+\end{equation}
+because averaging $D$ directly is not physical. Because the material-filtered
+flux score in OpenMC is already volume-integrated, no further volume factor is
+applied; doing so would weight each constituent by $V^2$ and break rate
+conservation. Removal is defined as
+\begin{equation}
+\Sig{r,\mathit{g}} = \Sigma_{\mathrm{a},g} + \sum_{g'\neq g}\Sigma_{\mathrm{s},g\rightarrow g'},
+\label{eq:removal}
+\end{equation}
+that is absorption plus total out-scatter in both directions, and the upper
+triangle of the tallied scatter matrix is carried separately as up-scatter data.
+A single core-average fission spectrum per branch is formed by weighting the
+tallied $\chi$ of each material by its fission neutron production, since $\chi$
+is fixed nuclear data belonging in the production operator rather than in the
+node features.
+
+\subsubsection{Branch interpolation and cross-section assignment}
+\label{sec:branch}
+
+The generator requires cross sections at arbitrary per-node states, whereas
+transport can only afford a coarse branch grid, so the table is interpolated in
+the standard lattice-physics manner. Burnup and temperature are interpolated
+bilinearly between bracketing branch points and clamped, never extrapolated;
+macroscopic cross sections are close to linear in both over the tabulated
+spacing. A generation-time check warns when a sampled range escapes the
+tabulated grid, because outside that grid every state clamps onto the same
+point and a slice of the dataset would silently carry identical constants while
+still advertising transport provenance.
+
+Control and shutdown insertion is expressed through a depth $f\in[0,1]$, with
+both endpoints measured by transport. The cross sections of the element blend
+from the tabulated withdrawn follower branch ($f=0$; a sodium follower in the
+fast reactor, a FLiBe-filled channel in the pebble bed) toward the tabulated
+fully inserted B$_4$C absorber branch ($f=1$). Removal, scattering, and fission
+cross sections blend linearly with $f$, corresponding to volume- or
+worth-weighted homogenization of a partially present absorber,
+\begin{equation}
+\Sigma_g(f) = (1-f)\,\Sigma_g^{\mathrm{out}} + f\,\Sigma_g^{\mathrm{in}},
+\label{eq:blendsigma}
+\end{equation}
+while the diffusion coefficient blends linearly in its transport cross section,
+\begin{equation}
+\frac{1}{3D_g(f)} = (1-f)\,\frac{1}{3D_g^{\mathrm{out}}} + f\,\frac{1}{3D_g^{\mathrm{in}}},
+\label{eq:blendd}
+\end{equation}
+which is equivalent to a worth-weighted harmonic mean of $D$. Eqs.~\eqref{eq:blendsigma}
+and \eqref{eq:blendd} carry an axial insertion depth into the two-dimensional
+radial model as an axially averaged absorber. The same insertion axis serves a
+second purpose: for every non-control material it is evaluated at the
+core-average insertion fraction, because the rod-out/rod-in branch pair also
+measures the spectrum shift that inserted absorbers impose on the remainder of
+the core.
+
+Whether intermediate depths are \emph{sampled} is then a physical question with
+different answers in the two cores, and the blend was measured on the assembled
+cores before deciding. In the fast reactor the absorber is not black: the
+measured worth curve is close to linear in depth, with $f=0.01$ carrying 1.3\% of
+full element worth, so the fast-reactor dataset draws continuous depths and
+densely samples the reactivity axis, as real cores hold control elements at
+intermediate heights to trim $\keff$. In the pebble bed the same blend is
+pathological. B$_4$C in a thermal spectrum is optically black at a few percent
+absorber fraction, so a volume-weighted blend makes worth a step function of
+depth: $f=0.01$ already carries 53--64\% of full element worth for both the
+reflector control rods and the bed shutdown blades. This is the classical
+rod-cusping error of homogenized partially inserted absorbers, and it makes an
+insertion coordinate that does not mean depth; a first pebble-bed dataset built
+on continuous depths was subcritical at every state and was discarded.
+
+Pebble-bed insertion is therefore \emph{binary per element}: each of the ten
+reflector control rods and three bed shutdown blades is fully inserted or fully
+withdrawn, and the reactivity lever is how many are in and which ones, with the
+pattern drawn uniformly so that asymmetric and stuck-element states arise
+naturally. The endpoints $f\in\{0,1\}$ are exactly the two transport-measured rod
+branches, so the blend of Eq.~\eqref{eq:blendsigma} is never evaluated at an
+interior point and the cusping error cannot enter. The cost is that the pebble-bed
+reactivity axis is sampled at discrete inserted-element counts rather than
+continuously; the benefit is that every rodded state in that database is a state
+transport actually measured.
+
+Per-node states are drawn per sample, with the ranges listed in
+Table~\ref{tab:sampling}. In the fast reactor a burnup and a temperature are
+drawn per assembly, and each control assembly draws its own insertion depth
+from the range of its split. In the pebble bed a burnup and a temperature are
+drawn per pebble, which is physical rather than cosmetic variability:
+multi-pass recirculation means that pebbles of every burnup coexist at every
+radius. The number of inserted control rods and of inserted shutdown blades is
+drawn from the range of the split and the inserted subset is then chosen
+uniformly at random, so asymmetric tilt and stuck-element off-normal states
+appear without being imposed. An optional radial burnup
+ramp may be blended into the independent draw, with default weight zero, to
+represent slower near-wall pebble flow; because its magnitude is proprietary it
+is opt-in and the weight used is recorded in each sample. Non-fuel materials
+are evaluated at zero burnup. Homogenized materials use the volume- and
+flux-weighted transport constants of Section~\ref{sec:groupconstants} -- the
+fast-reactor duct blends HT9 and sodium, each pebble node blends its resolved
+TRISO and graphite constituents with the surrounding FLiBe, and the barrel,
+downcomer, and vessel collapse into a single ring -- so that no homogenization
+is performed with representative constants at generation time.
+
+\begin{table}[htbp]
+\centering
+\caption{Per-node state sampling ranges.}
+\label{tab:sampling}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Quantity & Sodium fast reactor & Pebble-bed reactor \\
+\midrule
+Burnup ($\MWdkg$)        & 2--60, per assembly   & 2--190, per pebble \\
+Temperature (K)          & 630--1000, per assembly & 823.15--1100, per pebble \\
+Insertion                & Continuous $f\in[0,1]$ & Binary per element \\
+Insertion lever          & Depth of each of 13 assemblies & Count and pattern (10 rods, 3 blades) \\
+Depletion branch grid ($\MWdkg$) & 0, 2, 20, 40, 60 & 0, 2, 20, 50, 90, 130, 160, 190 \\
+Specific power (W/gHM)   & 45                    & 30 \\
+Depletion chain          & ENDF/B-VIII.0 fast    & ENDF/B-VIII.0 thermal \\
+Group boundary ($G{=}2$) & 0.1 MeV               & 0.625 eV \\
+Group boundaries ($G{=}4$) & 9.1188 keV, 0.1 MeV, 1.353 MeV & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Finite element solver}
+\label{sec:solver}
+
+Following geometry and material assignment, the multigroup neutron diffusion
+equations are discretized with the P1 finite element method on the triangular
+mesh \citep{duderstadt1976,stacey2007}. Sparse loss and production matrices are assembled from P1 element
+stiffness matrices, with the per-group element diffusion coefficient taken as
+the arithmetic mean of the three vertex values of the triangle, lumped mass
+matrices on the nodal volumes, and Marshak partial-current Robin boundary terms
+\citep{marshak1947} added to the stiffness diagonal on each boundary edge, with a
+contribution $\alpha L/2$ per endpoint of an edge of length $L$. The Robin
+coefficient is written for a general albedo $\beta$, the fraction of the outgoing
+partial current returned to the core, $J^- = \beta J^+$:
+\begin{equation}
+\alpha(\beta) \;=\; \frac{1-\beta}{2\,(1+\beta)} .
+\label{eq:albedo}
+\end{equation}
+Vacuum is thus the $\beta=0$ member of one family, $\alpha = 0.5$, rather than a
+separate code path, and $\beta\rightarrow1$ gives $\alpha\rightarrow0$, a
+reflective boundary with no leakage. The main datasets are generated at
+$\beta=0$; $\beta$ is varied only in the boundary-condition transfer family of
+Section~\ref{sec:datafamilies}, where the per-edge coefficient is carried on the
+geometry and the nodal value is exposed to the model as an additional node
+feature. This yields the
+generalized eigenvalue problem of Eq.~\eqref{eq:eigen} in a group-major block
+layout of dimension $GN \times GN$. Diagonal blocks carry stiffness, removal, and
+the Robin term; off-diagonal blocks carry the in-scatter sources; production
+blocks are
+\begin{equation}
+F_{gg'} \;=\; M\!\left(\chi_g\, \nu\Sigma_{\mathrm{f},g'}\right),
+\label{eq:prodblock}
+\end{equation}
+with $\chi$ taken from the tallied core-average branch spectrum at the state of
+that core, falling back to the analytic spectrum of the reactor -- $(0.99,\,0.01)$
+for the fast cut and $(1.0,\,0.0)$ for the thermal cut -- if the table carries
+none.
+
+Two physical terms enter at this stage and nowhere else. First, axial leakage:
+a two-dimensional radial model would otherwise neglect it, so the removal cross
+section of each group is augmented with a transverse-buckling term
+\citep{stacey2007} as
+\begin{equation}
+\Sig{r,\mathit{g}} \;\leftarrow\; \Sig{r,\mathit{g}} + D_g \Bz,
+\label{eq:buckling}
+\end{equation}
+with the geometric buckling of the reactor given in Table~\ref{tab:geometry};
+the transport models are axially reflective precisely so that this term is not
+double counted. Each buckling is $\Bz = (\pi/H_{\mathrm{extrap}})^2$ and is
+derived from the axial configuration rather than fitted to a target $\keff$. For
+the fast reactor $H_{\mathrm{extrap}} = 135$~cm, an approximately 100~cm active
+height plus approximately 15~cm of reflector savings per side. The savings term
+is not a refinement: a sodium fast reactor carries an axial reflector and a
+sodium plenum above the fuel, and savings are large in a fast core precisely
+because $D$ is large, so the flux extrapolates well past the fuel edge. The
+corresponding bare-slab value is worth approximately 23\% in $\keff$ and would
+place every state of the dataset below critical.
+
+Second, thermal up-scatter for the pebble bed: the tallied
+$\Sigma_{\mathrm{s},2\rightarrow1}$ at the temperature of each node adds an
+in-scatter source to the fast group at the operator level, keeping the per-node
+cross-section row down-scatter-only and the stored schema unchanged. Only the
+source term is added there, because the removal side is already present:
+$\Sig{r}$ of Eq.~\eqref{eq:removal} is defined as absorption plus out-scatter in
+\emph{both} directions, so the thermal-group removal already contains
+$\Sigma_{\mathrm{s},2\rightarrow1}$. Adding it a second time at the operator
+level is not a small error in this reactor -- for the moderator pebbles the
+up-scatter term is roughly 93\% of the thermal removal cross section, and
+double counting it drove every pebble-bed state approximately 21{,}000~pcm
+subcritical. Up-scatter is an $S(\alpha,\beta)$ thermal-motion effect and
+therefore could not defensibly be treated as a temperature-independent constant.
+
+A validated sparse eigensolver -- power iteration on $A^{-1}F$ using a single
+sparse LU factorization -- computes the reference flux distribution and
+effective multiplication factor for each configuration, converged to
+$10^{-9}$ relative in $\keff$ and $10^{-8}$ in the flux $L_2$ norm, with a
+sample accepted only if its relative PDE residual falls below $10^{-6}$. The
+nodal power density is then computed from the converged flux and the
+corresponding fission production cross sections,
+\begin{equation}
+p_i \;=\; E_{\mathrm{f}} \sum_{g} \nu\Sigma_{\mathrm{f},g}(\mathbf{x}_i)\,\phi_g(\mathbf{x}_i),
+\label{eq:power}
+\end{equation}
+with the energy-per-fission constant folded in. The power head of the model
+reuses exactly this relation, so that labels and predictions remain consistent.
+
+\subsubsection{Graph construction}
+\label{sec:graph}
+
+After the finite element solution is obtained, each mesh is converted into a
+graph representation for graph neural operator training, keeping two graphs
+strictly separate. The \emph{physics graph} is the P1 triangulation itself,
+stored as elements; it alone defines the assembly of $A$ and $F$ and the
+evaluation of the PDE residual. The \emph{message graph} is a distinct
+connectivity used only for neural message passing, in which every mesh node
+becomes a graph node carrying its spatial coordinates, one-hot material
+encoding, boundary indicator and local cross sections.
+
+The message graph is a $k$-nearest-neighbour graph on the mesh nodes, with
+$k=10$ by default, built with a KD-tree \todocite{k-d tree, Bentley 1975} and
+closed symmetrically, so that it is
+stored as a directed \texttt{edge\_index} containing both directions of every
+edge and no self-loops. The fixed degree yields clean batching and consistent
+GPU utilization on variable-size meshes. Each edge stores physically meaningful interface information:
+relative distance and displacement, a material-interface flag, the
+harmonic-mean interface diffusion coefficient, and the local differences of the
+diffusion coefficient, removal cross section and down-scattering cross section,
+with the constants of the fastest group used as the representative interface
+scalars. As in graph kernel network formulations of the neural operator
+\citep{li2020}, the message graph deliberately admits richer connectivity than
+the P1 stencil, allowing information to propagate beyond immediate element neighbors
+while preserving local geometric relationships. It is emphasized that $A$ and
+$F$ are assembled exclusively from the P1 triangulation; the message graph
+exists solely to support neural message passing.
+
+\subsubsection{Database construction}
+\label{sec:database}
+
+Each reactor configuration is stored as an independent database sample
+containing everything required for supervised and physics-informed training:
+node coordinates, triangular element connectivity
+$\texttt{elements}[T,3]$, boundary edges $\texttt{boundary\_edges}[B,2]$,
+per-node integer material labels, multigroup cross sections, lumped nodal
+volumes $\texttt{nodal\_volume}[N]$, the sparse loss and production matrices
+$A$ and $F$ of dimension $GN \times GN$, the message-graph connectivity
+$\texttt{edge\_index}[2,E]$ with eight-dimensional edge features (distance,
+$\Delta x$, $\Delta y$, material-interface flag, harmonic diffusion
+coefficient, and the diffusion, removal and down-scattering differences), a
+boundary mask, the group fluxes $\texttt{flux}[N,G]$, the effective
+multiplication factor $\keff$ and the nodal power density.
+
+Node feature vectors are schema-driven rather than fixed-width. Each vector is
+composed of $[x,y]$, a one-hot material block, an ordered cross-section block of
+width $D(G) + \Sig{r}(G) + G(G-1)/2$ down-scatter entries $+\ \nuSigf(G)$, and a
+boundary flag, with the exact ordering recorded in the sample metadata. Material
+is one-hot encoded rather than represented by an ordinal identifier, to avoid
+imposing a spurious ordering between materials. At the default $G=2$ this
+yields an 18-dimensional feature vector for the eight-material fast reactor and
+a 17-dimensional vector for the seven-material pebble bed; the widths follow
+directly from the group count and material set and are read from metadata,
+never hardcoded. A dataset may append trailing scalar columns after the boundary
+flag, which is how the nodal Marshak coefficient of Eq.~\eqref{eq:albedo} is
+carried on the boundary-condition transfer family without changing the layout of
+any other dataset; the columns present are named in the recorded feature
+ordering, and models size their lifting network from it. The resulting layout is
+summarized in Table~\ref{tab:features}.
+
+\begin{table}[htbp]
+\centering
+\caption{Node and edge feature layout at the default group count $G=2$.}
+\label{tab:features}
+\begin{tabular}{@{}llcc@{}}
+\toprule
+& Block & Width (general $G$) & Width ($G=2$) \\
+\midrule
+\multirow{8}{*}{Node}
+ & Coordinates $[x,y]$          & 2                & 2 \\
+ & One-hot material             & $M$              & 8 (SFR) / 7 (FHR) \\
+ & Diffusion coefficient $D_g$  & $G$              & 2 \\
+ & Removal $\Sig{r,\mathit{g}}$ & $G$              & 2 \\
+ & Down-scatter                 & $G(G-1)/2$       & 1 \\
+ & Fission production $\nuSigf$ & $G$              & 2 \\
+ & Boundary flag                & 1                & 1 \\
+ & Nodal Marshak $\alpha$ (BC family only) & 0 or 1 & 0 or 1 \\
+\cmidrule(l){2-4}
+ & \textbf{Total}               & $3+M+3G+G(G-1)/2$ & 18 (SFR) / 17 (FHR) \\
+\midrule
+\multirow{2}{*}{Edge}
+ & Distance, $\Delta x$, $\Delta y$, interface flag & 4 & 4 \\
+ & Harmonic $D$, $\Delta D$, $\Delta\Sig{r}$, $\Delta\Sigma_{\mathrm{s}}$ & 4 & 4 \\
+\cmidrule(l){2-4}
+ & \textbf{Total}               & 8                & 8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Geometry metadata describing the reactor type, group structure and fission
+spectrum, layout, assembly or pebble-zone positions, per-element control- and
+shutdown-insertion states, material counts, and node and edge feature ordering
+is retained to enable controlled dataset variability and future scalability
+studies. Anything that a sample cannot be reconstructed from otherwise is
+recorded there rather than inferred: the mesh refinement level, together with the
+distinct levels actually used and whether the mesh is uniform, since the node
+count also moves with the reflector ring count and therefore does not identify
+the level; the boundary albedo and the resulting per-edge Marshak coefficient;
+and the names of any trailing node-feature columns. Every sample additionally
+carries an \texttt{xs\_provenance} block
+recording the transport code and version, the evaluated data library, the
+weighting spectrum, the homogenization and diffusion-coefficient definitions,
+the depletion chain and per-zone enrichments, the branch grid, the per-branch
+$\keff$, the worst Monte Carlo relative standard deviation in the table, the
+interpolation rules and a converged flag. This block is never absent, since the
+material modules raise an error at import if their table is missing, so a
+sample cannot exist without transport provenance. Pebble-bed samples further
+carry an explicit \texttt{modeling\_assumptions} block recording where the
+model knowingly departs from the licensed methodology -- an independent rather
+than flow-path-correlated burnup field, a slice of the cylindrical section only,
+a solid rather than channeled graphite reflector, binary rather than partial
+element insertion, and multigroup diffusion in place of full-core
+three-dimensional Monte Carlo with burnup -- so that those departures are
+auditable from the dataset alone.
+
+\subsubsection{Verification and sample validation}
+\label{sec:verification}
+
+Generating group constants from transport makes the labels traceable, but it
+does not by itself demonstrate that multigroup diffusion reproduces transport,
+which is the claim on which the dataset rests. A dedicated verification harness
+closes that gap by solving identical core states in both ways: with the P1 FEM
+diffusion model used to label the dataset, and with a full-core
+continuous-energy OpenMC eigenvalue calculation. It reports, per state, the
+difference $\Delta k = k_{\mathrm{diff}} - k_{\mathrm{CE}}$, the reactivity bias
+in pcm, the control element worth from both codes, and the root-mean-square and
+maximum relative deviation between the diffusion power density and the OpenMC
+fission-rate distribution binned in common radial rings. Because the transport
+model is axially reflective, each state is solved twice with the diffusion
+model -- once at $\Bz=0$ to match the transport model, which is the pair from
+which the bias is measured, and once with the buckling of the dataset -- and the
+reactivity difference between the two is reported as an explicit axial debit, so
+that the axial treatment remains visible rather than hidden inside the bias.
+States are run at uniform burnup, temperature, and insertion, since the per-node
+scatter of the dataset has no single continuous-energy counterpart.
+
+The same harness carries the group-resolution sensitivity study, by re-solving
+the fast-reactor states on the four-group table of
+Section~\ref{sec:groupconstants} while reusing the continuous-energy statepoints
+unchanged, the reference being independent of the group structure. This
+separates the two candidate explanations for a reactivity bias in the labels:
+too coarse a group collapse, or the diffusion approximation itself. The result
+(Section~\ref{sec:res-verification}) attributes the residual to the latter, which
+is why the datasets are generated at $G=2$ and the four-group structure is kept
+as a sensitivity study rather than a second dataset.
+
+Every generated sample is additionally checked before it reaches training.
+The checks comprise schema-derived tensor shapes and feature widths, one-hot
+validity, finiteness, sparse operator dimensions $[GN,GN]$, a non-empty boundary
+mask, valid triangles and boundary edges with in-range indices, strictly
+positive lumped nodal volumes summing to the meshed core area (partition of
+unity), presence of the defining structural and fuel materials in the mesh,
+absence of self-loops in the message graph, a relative PDE residual below
+$10^{-6}$ for the reference solution, and a physically plausible $\keff$.
+
+Training, validation and test splits are kept disjoint on control insertion,
+which is the axis that most strongly moves the solution. In the fast reactor the
+insertion depth ranges are 0--0.5, 0.5--0.75 and 0.75--1.0; in the pebble bed,
+where insertion is binary, the splits are disjoint on the \emph{number} of
+inserted elements, at zero to five control rods and zero or one shutdown blade
+for training, six or seven and two for validation, and eight to ten and three
+for test. The remaining axes are variability rather than separation and are
+allowed to overlap: the fast-reactor enrichment-boundary ring and reflector-ring
+counts, and the pebble packing seed, moderator-pebble fraction and per-node
+burnup and temperature, all vary within each split.
+
+This is a deliberately hard split, and its consequence must be stated plainly:
+$\keff$ tracks insertion, so the validation and test sets occupy $\keff$ ranges
+the model never sees in training and the $\keff$ head is required to
+\emph{extrapolate}, not to interpolate. In the pebble-bed database the realized
+ranges are 0.986--1.076 for training, 0.929--0.990 for validation and
+0.833--0.905 for test. Reported $\keff$ errors on validation and test should be
+read in that light; a split that shuffled configurations at random would report
+far smaller errors while measuring far less.
+
+\subsubsection{Dataset families}
+\label{sec:datafamilies}
+
+Two main databases are generated, one per benchmark, each of 7000 samples split
+5000/1000/1000 by the plans above, at fast-reactor mesh level $s=0$ and vacuum
+boundaries. Every sample converged, with a worst relative PDE residual of
+approximately $1.2\times10^{-8}$ across both databases. Typical sizes are 3421
+nodes for the fast reactor at 217--271 assemblies and 7098 nodes for the pebble
+bed at approximately 1730 pebbles.
+
+Two further families vary a single generation axis in order to pose
+generalization questions that the main databases cannot. Both are fast-reactor
+only.
+
+\paragraph{Mesh resolution} The refinement level $s$ of
+Section~\ref{sec:geometry} is swept over levels 1--3, giving approximately 4700,
+13\,800 and 28\,200 nodes per core, together with a non-uniform level in which
+the inner and outer assemblies carry different levels. The family is
+\emph{paired}: every level solves the same physical cores -- the same insertion
+depths, the same per-assembly burnup and temperature, the same ring counts --
+because the number of random draws depends only on the assembly count, which
+refinement does not change, so re-seeding replays an identical draw sequence at
+each level. The pairing is asserted at generation time rather than assumed.
+Without it, a difference across levels would confound discretization with
+configuration, since insertion alone moves $\keff$ by far more than refinement
+does. The non-uniform level is the sharper probe of the two aggregation rules
+compared in Section~\ref{sec:kernel}: uniform refinement changes node density
+everywhere at once, which a message-passing model can partly absorb by
+rescaling, whereas a mixed mesh makes density vary \emph{within} a single graph,
+so the core no longer has one local node count for an unweighted sum to track.
+
+\paragraph{Boundary condition} The albedo $\beta$ of Eq.~\eqref{eq:albedo} is
+held disjoint across splits at $[0,0.40)$, $[0.40,0.55)$ and $[0.55,0.80]$, the
+test range extrapolating, while insertion, ring counts, burnup and temperature
+are drawn identically in all three, so that a failure to generalize is
+attributable to the boundary condition and not to a core state the model never
+saw. This family drops the outer shield ring, and that departure from the
+production layout is not optional. The shield is optically thick, so on the
+production core the boundary is very nearly invisible: sweeping $\beta$ from 0 to
+0.8 moves $\keff$ by 0.5~pcm and the normalized flux by 0.065\%. Removing the
+shield raises those to 1445~pcm and 11.08\%, and removing the radial reflector as
+well to 5371~pcm and 29.15\%. The reflector-only core is used, keeping the
+radial reflector a fast core physically requires while making the outer boundary
+a live part of the problem; on the production geometry every model would appear
+to generalize perfectly by ignoring the boundary condition entirely, and the
+result would be an artifact. The choice is recorded in every sample of the
+family. The pebble bed admits no equivalent: at the published vessel stack the
+same sweep moves $\keff$ by 1.4~pcm, and thinning that stack would depart from
+the dimensional specification the benchmark is pinned to, so boundary-condition
+transfer is claimed for the fast reactor only.
+
+%--------------------------------------------------------------
+\subsection{Physics-informed graph neural operator framework}
+\label{sec:pigno}
+
+\subsubsection{Feature lifting}
+\label{sec:lifting}
+
+Prior to message passing, node and edge features are independently projected
+into higher-dimensional latent spaces using multilayer perceptrons with SiLU
+activation functions \todocite{SiLU activation},
+\begin{equation}
+\mathbf{h}_i^{(0)} = \mathrm{MLP}_{\mathrm{node}}(\mathbf{x}_i),
+\qquad
+\mathbf{e}_{ij} = \mathrm{MLP}_{\mathrm{edge}}(\mathbf{a}_{ij}),
+\label{eq:lift}
+\end{equation}
+where $\mathbf{x}_i$ is the node feature vector of Table~\ref{tab:features} and
+$\mathbf{a}_{ij}$ the corresponding edge feature vector. These lifting networks
+transform the raw physical reactor quantities into latent representations
+better suited to graph operator learning while preserving the underlying
+reactor physics.
+
+\subsubsection{Kernel integration layers}
+\label{sec:kernel}
+
+The lifted node representations are processed through multiple graph neural
+operator kernel integration layers \citep{li2020,kovachki2023}. Within each layer, information from
+neighboring nodes is aggregated by residual message passing,
+\begin{equation}
+\mathbf{h}_i^{(\ell+1)} = \mathbf{h}_i^{(\ell)}
++ \mathrm{LN}\!\left(
+\mathcal{A}_{j\in\mathcal{N}(i)}\!\left[\,
+m_{ij}^{(\ell)} \,\right]
+\right),
+\qquad
+m_{ij}^{(\ell)} =
+\kappa_\theta\!\left(\mathbf{h}_i^{(\ell)},\,\mathbf{h}_j^{(\ell)},\,\mathbf{e}_{ij}\right),
+\label{eq:kernel}
+\end{equation}
+where each message depends on the latent representations of the neighboring
+nodes together with their associated edge features describing geometric and
+material interactions, $\kappa_\theta$ is the learned kernel and $\mathrm{LN}$
+denotes layer normalization \todocite{layer normalization, Ba et al. 2016}.
+Layer normalization is applied after each
+message-passing block to improve optimization stability and to facilitate
+training of deeper graph operator architectures.
+
+The aggregation $\mathcal{A}$ is where a graph neural network and a graph
+neural operator part company, and it is left selectable so that the difference
+can be measured rather than asserted. Three rules are implemented,
+\begin{equation}
+\mathcal{A}^{\mathrm{sum}} = \sum_{j\in\mathcal{N}(i)} m_{ij},
+\qquad
+\mathcal{A}^{\mathrm{vol}} =
+\frac{\sum_{j\in\mathcal{N}(i)} V_j\, m_{ij}}{\sum_{j\in\mathcal{N}(i)} V_j},
+\qquad
+\mathcal{A}^{\mathrm{raw}} = \sum_{j\in\mathcal{N}(i)} V_j\, m_{ij},
+\label{eq:aggregation}
+\end{equation}
+with $V_j$ the lumped nodal volume of Section~\ref{sec:solver}. The unweighted
+scatter-add $\mathcal{A}^{\mathrm{sum}}$ is a graph neural network aggregation;
+it carries no quadrature weight and its value therefore depends on how many
+neighbours the mesh happens to supply. The volume-weighted average
+$\mathcal{A}^{\mathrm{vol}}$ is the Nystr\"om approximation of the kernel
+integral
+\begin{equation}
+(\mathcal{K}\phi)(x_i) = \int_\Omega
+\kappa(x_i, y)\,\phi(y)\,\mathrm{d}y
+\;\approx\; \sum_{j\in\mathcal{N}(i)} V_j\,\kappa(x_i, y_j)\,\phi_j ,
+\label{eq:nystrom}
+\end{equation}
+in which the weight belongs to the \emph{source} node $j$ because the integral
+is taken over $y$; this is the default and is the form the operator claim
+rests on. The unnormalized $\mathcal{A}^{\mathrm{raw}}$ is the strict Nystr\"om
+estimate and is retained to show why the normalization is needed: with a
+fixed-degree $k$-nearest-neighbour graph the neighbourhood shrinks as the mesh
+refines, so the raw sum loses magnitude with resolution while the normalized
+form does not. Section~\ref{sec:res-discretization} reports all three, which is
+what attributes any operator-versus-network difference to the volume quadrature
+rather than to the name of the model.
+
+The limitation of that construction is stated here rather than left for a
+reader to find. Discretization invariance in the graph-neural-operator sense
+requires both a fixed physical integration domain and quadrature weights that
+converge to the underlying measure. Volume weighting supplies the second;
+it does not supply the first, since a fixed-degree neighbourhood contracts as
+$N$ grows. What is claimed and measured in this work is therefore not the
+limiting theorem but the part of it that acts over the two- to fourfold
+refinement range the study spans.
+
+\subsubsection{Prediction heads}
+\label{sec:heads}
+
+Following message passing, separate prediction heads generate the physical
+quantities of interest. Node-level prediction layers estimate the neutron flux
+in each energy group, while graph-level pooling followed by a multilayer
+perceptron predicts the multiplication factor,
+\begin{equation}
+\hat{\phi}_{i,g} = \mathrm{MLP}_{\phi}\!\left(\mathbf{h}_i^{(L)}\right),
+\qquad
+\hat{k}_{\mathrm{eff}} = \mathrm{MLP}_{k}\!\left(
+\frac{1}{N}\sum_{i=1}^{N}\mathbf{h}_i^{(L)}\right).
+\label{eq:heads}
+\end{equation}
+Rather than introducing an additional neural prediction head, the nodal power
+density is computed analytically from the predicted flux using
+Eq.~\eqref{eq:power}, thereby improving physical consistency and reducing the
+number of learned quantities.
+
+\subsubsection{Physics-informed objective}
+\label{sec:loss}
+
+Physics-informed constraints are incorporated directly into the optimisation
+objective, in the manner of physics-informed learning
+\citep{raissi2019,sarkar2025}, by minimising the residual of the governing
+discrete diffusion eigenvalue problem,
+\begin{equation}
+\mathcal{R} \;=\; A\,\hat{\boldsymbol{\phi}}
+- \frac{1}{\hat{k}_{\mathrm{eff}}}\,F\,\hat{\boldsymbol{\phi}},
+\label{eq:residual}
+\end{equation}
+which encourages the predicted solutions to satisfy the underlying reactor
+physics. The complete loss function comprises four components,
+\begin{equation}
+\mathcal{L} \;=\;
+\lambda_{\phi}\,\mathcal{L}_{\phi}
++ \lambda_{k}\,\mathcal{L}_{k}
++ \lambda_{\mathrm{PDE}}\,\mathcal{L}_{\mathrm{PDE}}
++ \lambda_{\mathrm{BC}}\,\mathcal{L}_{\mathrm{BC}},
+\label{eq:loss}
+\end{equation}
+namely the supervised neutron flux loss, the multiplication factor loss, the
+PDE residual loss and the boundary condition loss, with $\lambda$ the
+corresponding weights. The flux and $\keff$ losses are evaluated in normalized
+units for scale stability, whereas the residual of Eq.~\eqref{eq:residual} is
+evaluated in physical units, since $A$ and $F$ are physical operators.
+
+The boundary term requires a caveat, because the boundary condition is enforced
+twice over and only one of the two routes is active by default. The Marshak
+condition of Section~\ref{sec:solver} is a Robin condition assembled into $A$
+itself, so it is already carried by $\mathcal{L}_{\mathrm{PDE}}$, and the
+reference boundary flux it produces is deliberately \emph{nonzero}. A
+zero-flux penalty $\mathcal{L}_{\mathrm{BC}} = \langle
+\hat{\phi}^{2}\rangle_{\partial\Omega}$ therefore does not express the boundary
+condition of this discretization; it contradicts the reference solution, and
+driving it to zero would drive the prediction away from the labels. The term is
+consequently weighted at $\lambda_{\mathrm{BC}} = 0$ for every result reported
+here, and is retained in Eq.~\eqref{eq:loss} for two purposes: as the reported
+boundary residual diagnostic of Section~\ref{sec:res-physics}, and as an active
+penalty for a Dirichlet-zero discretization, where it would be the correct
+statement of the condition. The physics constraint in this work is thus the
+operator residual, with the boundary condition entering through the assembled
+operator rather than as an independent penalty.
+
+%--------------------------------------------------------------
+\subsection{Benchmark models}
+\label{sec:baselines}
+
+The proposed PI-GNO framework is evaluated against three baselines, each
+representing a distinct and widely used answer to the same problem: a
+grid-based neural operator, a non-graph neural operator, and a mesh-based graph
+neural network. They are listed in Table~\ref{tab:baselines}.
+
+The Fourier neural operator and MeshGraphNet baselines are taken from NVIDIA
+PhysicsNeMo 2.1.1 \todocite{NVIDIA PhysicsNeMo 2.1.1} rather than reimplemented,
+so that the comparison against the proposed model is not self-refereed. The
+deep operator network \todocite{DeepONet, Lu et al. 2021} is implemented in this
+work, following the original branch--trunk--inner-product formulation, because
+it is not part of the PhysicsNeMo core library; DeepONet has previously been
+applied to two-dimensional neutron transport \citep{kobayashi2024}.
+
+\begin{table}[htbp]
+\centering
+\caption{Benchmarked architectures and the capability each is used to probe.
+``Irregular geometry'' means the model consumes the unstructured mesh without
+resampling; ``discretization transfer'' means the same trained weights may be
+evaluated at a different mesh resolution; ``new boundary condition'' means the
+model has an explicit channel through which an unseen boundary condition can
+enter at test time.}
+\label{tab:baselines}
+\begin{tabular}{@{}llccc@{}}
+\toprule
+Model & Source & Irregular & Discretization & New \\
+      &        & geometry  & transfer       & BC \\
+\midrule
+FNO          & PhysicsNeMo 2.1.1 & --      & \checkmark & -- \\
+DeepONet     & this work         & partial & partial    & -- \\
+MeshGraphNet & PhysicsNeMo 2.1.1 & \checkmark & --      & -- \\
+PI-GNO       & this work         & \checkmark & \checkmark & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+One frequent statement about the Fourier neural operator is not made here,
+because it is false: FNO learns its kernel in Fourier space and is genuinely
+resolution-flexible, which is its central claim. Its limitation in this setting
+is narrower and specific. FNO requires a \emph{uniform Cartesian grid}, and
+neither a hexagonal duct lattice nor a randomly packed pebble bed is one, so the
+input field must be rasterized onto a grid and the prediction interpolated back
+to the mesh nodes before it can be scored. That round trip loses information
+regardless of how well the network fits, and the loss is a property of the
+geometry rather than of the architecture. It is measured directly, without any
+trained model, in Section~\ref{sec:res-floors}, and reported beside every FNO
+result, so that ``FNO performed worse on irregular geometry'' decomposes into
+the part attributable to the grid and the part attributable to the model.
+Similarly, DeepONet is marked partial rather than absent on both axes: its trunk
+evaluates at arbitrary coordinates and therefore at the mesh nodes directly,
+incurring no output interpolation error, but its branch reads a fixed sensor
+lattice on a fixed domain, so its input representation is as grid-bound as
+FNO's.
+
+A second qualification matters as much. PI-GNO with the unweighted aggregation
+$\mathcal{A}^{\mathrm{sum}}$ of Eq.~\eqref{eq:aggregation} \emph{is} a graph
+neural network in exactly the respect under test; the operator behaviour comes
+from the volume quadrature, not from the model's name. The aggregation
+ablation of Section~\ref{sec:res-discretization} is therefore presented with
+$\mathcal{A}^{\mathrm{sum}}$ as the network-side control rather than as a third
+variant of the proposed model.
+
+\subsubsection{Architectural fairness}
+\label{sec:fairness-arch}
+
+Four choices remove the most obvious confounders from the comparison.
+
+\begin{enumerate}
+\item MeshGraphNet receives the \emph{same} $k$-nearest-neighbour message graph
+and the same eight-dimensional edge features as PI-GNO, not the finite element
+triangulation. Had the two models seen different graphs, any accuracy
+difference would have been attributable to the graph rather than to the
+processor.
+\item MeshGraphNet's decoder emits a latent vector to which the \emph{same}
+flux and $\keff$ heads of Eq.~\eqref{eq:heads} are attached, so the comparison
+is processor against processor with the heads held fixed.
+\item Every model, including the baselines, computes nodal power from its
+predicted flux through the same parameter-free relation of
+Eq.~\eqref{eq:power}. Power error therefore reflects flux error alone, and no
+model can win on power by fitting the power labels with a free head.
+\item FNO predicts on its grid and is interpolated back to the mesh nodes
+\emph{before} being scored. Scoring it on its own grid would conceal precisely
+the error the baseline exists to expose. Rasterization onto the grid is
+nearest-neighbour, since cross sections are piecewise constant per material and
+blending them across an interface would invent materials that do not exist;
+interpolation from the grid back to the mesh is bilinear, the flux being smooth
+and the linear choice being the more generous one for FNO.
+\end{enumerate}
+
+%--------------------------------------------------------------
+\subsection{Training and evaluation methodology}
+\label{sec:training}
+
+All models are trained on identical training, validation and test datasets,
+with the split construction of Section~\ref{sec:datafamilies}. Validation data
+are used for model selection and for the one hyperparameter that is tuned per
+model; the test set contains reactor configurations outside the training range
+of the separating axis, so every reported error is an extrapolation error.
+
+\subsubsection{Controls on the comparison}
+\label{sec:fairness-train}
+
+Five controls are applied, each answering an objection that would otherwise
+render the comparison unfalsifiable.
+
+\paragraph{A common parameter budget} Every model is sized to
+$4.0\times10^{5}$ trainable parameters by bisecting a single width knob, so that
+``the proposed model was simply larger'' has a recorded answer. Width rather
+than depth is the knob, because depth changes the receptive field, which is
+itself part of what is under study for the graph models. The achieved counts are
+given in Table~\ref{tab:budget}. Three of the four models land within
+0.6\% of the budget. FNO lands 8.0\% \emph{above} it: its spectral convolution
+parameters scale with the square of the latent channel count, so the budget is
+not exactly reachable, and the nearest attainable configuration was taken on
+the side that favours the baseline rather than starves it. Actual counts, not
+the nominal budget, are reported.
+
+\begin{table}[htbp]
+\centering
+\caption{Parameter-budget matching. One width knob per model is bisected to a
+common target of $4.0\times10^{5}$ trainable parameters.}
+\label{tab:budget}
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+Model & Width knob & Value & Parameters & Deviation \\
+\midrule
+PI-GNO       & latent dimension     & 25 & 398\,605 & $-0.3\%$ \\
+MeshGraphNet & hidden dimension     & 75 & 399\,765 & $-0.1\%$ \\
+DeepONet     & branch hidden width  & 35 & 402\,384 & $+0.6\%$ \\
+FNO          & latent channels      & 10 & 432\,199 & $+8.0\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{A common learning-rate grid} Each model selects its learning rate
+from the same grid $\{3\times10^{-4},\,10^{-3},\,3\times10^{-3}\}$ on the
+validation split, using the same shortened budget. This is the only per-model
+tuning performed, so ``the baselines were undertuned'' is answered by equal
+treatment rather than by unequal effort.
+
+\paragraph{One training loop} All four models pass through a single training
+and evaluation implementation, with one normalization procedure and one metric
+function. Optimization is AdamW \todocite{AdamW, Loshchilov and Hutter 2019}
+with weight decay $10^{-5}$, gradient-norm clipping at 1.0, a five-epoch linear
+warm-up followed by cosine annealing over a 200-epoch budget, batch size four,
+and early stopping after 30 epochs without validation improvement. Evaluation
+runs at batch size one so that per-core and per-material metrics remain
+per core. Normalization statistics are fitted on the training split only, are
+persisted alongside each checkpoint, and are applied unchanged to validation,
+test and transfer data, so that a checkpoint is always evaluated with the
+transform it was trained under.
+
+\paragraph{A data-only accuracy comparison} The architecture comparison is run
+with $\lambda_{\mathrm{PDE}}=0$ for \emph{every} model, PI-GNO included. This is
+the single most important control in the study: were PI-GNO to retain its
+physics loss while the baselines had none, any advantage would be attributable
+to the objective rather than to the architecture. The physics term is
+reintroduced separately, and credited separately, in the ablation of
+Section~\ref{sec:res-physics}.
+
+\paragraph{Repetition} Every cell is run with three random seeds, and results
+are reported as mean $\pm$ standard deviation across seeds.
+
+\subsubsection{Experiment matrix}
+\label{sec:matrix}
+
+The five experiments of Table~\ref{tab:experiments} expand into 35 cells, each
+a model paired with one sweep value, and 105 training runs at three seeds per
+cell. E5 is a reporting pass over timings the training runs already record and
+adds no runs of its own.
+
+\begin{table}[htbp]
+\centering
+\caption{Experiment matrix. ``Cells'' counts model $\times$ sweep-value
+combinations; each cell is run at three seeds.}
+\label{tab:experiments}
+\begin{tabular}{@{}llcl@{}}
+\toprule
+Experiment & Database & Cells & Question \\
+\midrule
+E1 (fast reactor) & main SFR      & 4 & architecture accuracy, data-only \\
+E1 (pebble bed)   & main FHR      & 4 & the same, thermal spectrum, random packing \\
+E2 (fast reactor) & main SFR      & 6 & physics-loss weight, graph models \\
+E2 (pebble bed)   & main FHR      & 6 & the same \\
+E3 transfer       & mesh family   & 4 & discretization transfer, all models \\
+E3 aggregation    & mesh family   & 3 & operator-versus-network mechanism \\
+E4 transfer       & albedo family & 4 & boundary-condition transfer \\
+E4 with physics   & albedo family & 4 & does the physics term aid BC transfer \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+E2 and the aggregation ablation are restricted to the graph models, which are
+the only ones that consume the assembled operators $A$ and $F$ directly. E3 and
+E4 are run on the fast reactor only, for reasons that are physical rather than
+practical and are stated rather than omitted. The pebble-bed mesh carries one
+node per pebble, so its node count \emph{is} the reactor and cannot be refined
+without changing the problem; and its boundary condition is unmeasurable at the
+published vessel stack, as quantified in Section~\ref{sec:datafamilies}.
+
+E3 trains at the middle uniform refinement level and evaluates the same
+checkpoints at every other level, so that both a coarsening and a refinement are
+tested; training at either end of the family would test only one direction.
+Transfer evaluations reuse the trained checkpoint rather than retraining per
+target, retraining being a different question.
+
+\subsubsection{Metrics}
+\label{sec:metrics}
+
+The same quantities are recorded per core for every experiment and every model.
+Numerical accuracy is quantified by the relative $L_2$ error,
+\begin{equation}
+\varepsilon_{L_2} =
+\frac{\lVert \hat{\boldsymbol{\phi}} - \boldsymbol{\phi} \rVert_2}
+     {\lVert \boldsymbol{\phi} \rVert_2},
+\label{eq:l2}
+\end{equation}
+evaluated per energy group, together with the mean absolute error, the
+root-mean-square error, the coefficient of determination $R^2$, and the error
+in the multiplication factor, reported in pcm. The same relative $L_2$ measure
+is applied to the nodal power density and, restricted to the nodes of each
+material, to the per-material breakdown that locates where the error lives.
+Physical consistency is assessed by the root-mean-square residual of
+Eq.~\eqref{eq:residual} and by the boundary flux diagnostic of
+Section~\ref{sec:loss}. Computational cost is recorded as inference wall-clock
+time per core alongside the node count, for comparison against the reference
+solver timings of Section~\ref{sec:res-cost}.
+
+\subsubsection{Measuring discretization transfer}
+\label{sec:res-transfer-metric}
+
+Discretization transfer requires more care than the other axes, because the
+obvious metric measures the wrong thing. Scoring a model against \emph{each
+mesh's own} finite element reference does not measure discretization
+invariance, since those references are not the same field: they differ from one
+another by the finite element convergence error, quantified in
+Section~\ref{sec:res-floors}. Scored that way, a model is charged for the
+discretization error of its label, and a model that fit every mesh perfectly
+would appear maximally mesh-\emph{dependent}. Two metrics are therefore
+reported together.
+
+\paragraph{Invariance, with no reference involved} The same trained model is
+evaluated on two meshes of the same physical core, one prediction is
+interpolated onto the other's nodes, and the disagreement between them is
+measured. A discretization-invariant operator scores zero on this metric
+irrespective of whether it is accurate.
+
+\paragraph{Accuracy against a fixed fine mesh} All predictions are additionally
+scored against one finely resolved reference solution, with each mesh's own
+distance from that reference --- its discretization floor --- reported beside
+it, since no model can reasonably be faulted for error below the floor of the
+data it was given.
+
+Both are necessary, because invariance alone is gameable: a constant output is
+perfectly invariant, and in a preliminary run an undertrained model scored
+better invariance than the finite element references themselves while being
+uniformly wrong at every resolution.
+
+A scale convention is required for either metric to mean anything. The
+eigensolver of Section~\ref{sec:solver} returns an eigenvector normalized to
+unit $L_2$ norm over its $GN$ entries, so the magnitude of a reference flux
+vector is an artifact of the node count, falling as $N^{-1/2}$: the maximum
+fast-group value across the mesh family of Section~\ref{sec:datafamilies} is
+0.0375, 0.0212 and 0.0147 at successive refinement levels. All cross-mesh
+comparisons are therefore renormalized by $\int \sum_g \phi_g \,\mathrm{d}V$,
+one scalar applied to all groups, so that the physical spectral ratio between
+groups survives the renormalization.
+
+%=========================================================================
+\section{Results and discussion}
+\label{sec:results}
+
+Results are presented in two parts. Sections~\ref{sec:res-verification} and
+\ref{sec:res-floors} report properties of the databases and of the reference
+solver that hold independently of any trained model, and that bound what any
+model in the study can achieve. Sections~\ref{sec:res-accuracy} to
+\ref{sec:res-cost} report the trained models against those bounds.
+
+Three qualifications apply to every number that follows and are stated once
+here.
+
+\begin{enumerate}
+\item \emph{All reported errors are extrapolation errors.} The splits of
+Section~\ref{sec:datafamilies} are disjoint on control insertion, so the
+validation and test sets occupy $\keff$ ranges and rod configurations the models
+never see in training. These are not independent and identically distributed
+holdouts, and the absolute errors are correspondingly larger than a shuffled
+split would report. The comparison \emph{between} models, at a common split, is
+the part of the result that carries meaning.
+\item \emph{Cross-section provenance.} Every sample carries its transport
+provenance: the Monte Carlo code and version, the evaluated data library, the
+branch grid, the per-branch $\keff$ and its Monte Carlo uncertainty. No
+hand-tuned or representative cross-section library exists anywhere in the
+pipeline.
+\item \emph{The unweighted aggregation is a graph neural network.} In the
+aggregation ablation of Section~\ref{sec:res-discretization},
+$\mathcal{A}^{\mathrm{sum}}$ is presented as the network-side control, not as a
+third flavour of the proposed operator.
+\end{enumerate}
+
+\subsection{Dataset and reference solution verification}
+\label{sec:res-verification}
+% TODO: table of diffusion vs. continuous-energy transport per verification
+% state (dk, bias in pcm, control worth in both codes, axial debit, radial
+% power RMS/max), plus the four-group sensitivity study of Sec. 2.4.
+
+\subsection{Error floors independent of any model}
+\label{sec:res-floors}
+
+\subsubsection{Finite element discretization floor}
+\label{sec:res-femfloor}
+
+The reference labels inherit the convergence error of the P1 discretization
+that produced them. Refining the fast-reactor mesh over levels 3 to 6 gives
+successive $\keff$ gaps of 541, 329 and 221~pcm, a ratio of 1.49 against the
+1.50 that first-order convergence predicts, so the observed order is
+$p \approx 1.0$. Richardson extrapolation on that sequence places even the
+finest mesh used here, at $N \approx 1.1\times10^{5}$ nodes, approximately
+1100~pcm from the continuum limit, and the production mesh of the main
+fast-reactor database approximately 4700~pcm from level 3.
+
+This bounds what the labels are, and it is why they are described as
+self-consistent rather than as converged. Within one refinement level the
+labels are internally consistent to the eigensolver tolerance, with a worst
+relative residual of order $10^{-8}$, which is what a machine learning
+benchmark requires: every model is fit to, and scored against, the same
+discrete operator. It is not what a comparison against continuous-energy
+transport requires, and any reactivity bias reported in
+Section~\ref{sec:res-verification} must be read with this floor beside it.
+
+\subsubsection{Rasterization floor for the grid baseline}
+\label{sec:res-rasterfloor}
+
+The mesh-to-grid-to-mesh round trip that the Fourier neural operator requires
+loses information before any network is trained. Pushing the \emph{reference}
+flux through that round trip therefore bounds the FNO error from below.
+Table~\ref{tab:rasterfloor} reports the resulting floor for both benchmarks at
+three grid resolutions.
+
+\begin{table}[htbp]
+\centering
+\caption{Rasterization floor: relative $L_2$ error incurred by resampling the
+reference flux onto a uniform grid and interpolating it back to the mesh nodes.
+No trained model is involved. Every FNO result is bounded below by these
+values.}
+\label{tab:rasterfloor}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{Fast reactor} & \multicolumn{2}{c}{Pebble bed} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Grid & group 1 & group 2 & group 1 & group 2 \\
+\midrule
+$64^2$  & 2.7\% & 2.4\% & 3.7\% & 9.1\% \\
+$128^2$ & 1.2\% & 1.1\% & 1.8\% & 4.7\% \\
+$192^2$ & 0.7\% & 0.6\% & 1.1\% & 3.1\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The thermal group of the pebble bed is the sharp case. A $128^2$ grid spanning
+the 420~cm core diameter resolves 3.3~cm per cell against a 4~cm pebble, so the
+grid cannot represent the pebble-scale thermal flux structure at all, and no
+FNO trained on that grid can fall below 4.7\% thermal flux error regardless of
+its fit. FNO is accordingly given a grid sweep over $\{64^2, 96^2, 128^2,
+192^2\}$ and reported at its best configuration, with the corresponding floor
+alongside.
+
+\subsubsection{Discretization floor of the mesh family}
+\label{sec:res-meshfloor}
+
+Table~\ref{tab:probefloor} reports the two reference quantities defined in
+Section~\ref{sec:res-transfer-metric}, measured over 30 paired configurations
+of the mesh family --- the same physical cores meshed six ways. The invariance
+column is the finite element solution's \emph{own} mesh dependence, and is the
+number a model must beat in order to be more discretization-invariant than the
+discretization it was trained on. The floor column is each mesh's distance from
+the finest reference.
+
+\begin{table}[htbp]
+\centering
+\caption{Reference behaviour of the paired mesh family, 30 configurations.
+Invariance is measured against level 3 and the floor against the level-6 truth
+mesh; both are relative $L_2$ errors after the common renormalization of
+Section~\ref{sec:res-transfer-metric}. These are properties of the finite
+element solutions alone.}
+\label{tab:probefloor}
+\begin{tabular}{@{}llrcccc@{}}
+\toprule
+& & & \multicolumn{2}{c}{Invariance vs.\ level 3}
+    & \multicolumn{2}{c}{Floor vs.\ level 6} \\
+\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+Mesh & Character & $N$ & group 1 & group 2 & group 1 & group 2 \\
+\midrule
+Level 0 & different meshing rule & 3\,821  & 0.0963 & 0.0584 & 0.1131 & 0.0742 \\
+Level 1 & coarser                & 5\,275  & 0.0655 & 0.0667 & 0.0815 & 0.0827 \\
+Mixed   & density varies within one graph & 9\,271 & 0.0863 & 0.0570 & 0.0977 & 0.0716 \\
+Level 2 & training discretization & 15\,447 & 0.0158 & 0.0172 & 0.0315 & 0.0342 \\
+Level 3 & finer                  & 31\,432 & ---    & ---    & 0.0155 & 0.0172 \\
+Level 6 & truth mesh             & 114\,265 & ---   & ---    & ---    & ---    \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two features of Table~\ref{tab:probefloor} are worth stating explicitly.
+
+First, the references disagree with one another substantially. The fast-group
+flux differs by 6.5\% between levels 1 and 3 after renormalization, and $\keff$
+moves 3059~pcm between levels 1 and 2 on the \emph{same physical core}. This is
+the quantitative reason a per-mesh reference cannot serve as the transfer
+metric.
+
+Second, the mixed mesh has approximately 1.8 times the node count of level 1
+yet a worse floor, and the cause is measured rather than assumed. It is not
+element quality: the triangle aspect-ratio distributions of the two meshes are
+indistinguishable, with a 99th percentile of 13.47 and a maximum of 30.16. It
+is domain area. The Delaunay gap-filling filter of Section~\ref{sec:geometry}
+rejects more triangles where a finely meshed assembly abuts a coarsely meshed
+one, so the mixed mesh represents 0.94\% less core area than the truth mesh
+against 0.76\% for level 1, and the floor tracks the area deficit across the
+whole family. The correct reading is that a mesh with more nodes covered less
+of the core, not that more nodes gave worse physics.
+
+\subsection{Flux and multiplication factor accuracy}
+\label{sec:res-accuracy}
+% TODO (E1): table of relative L2 per group, MAE, RMSE, R^2, k_eff error in
+% pcm and power relative L2, for all four models on both benchmarks, at
+% lambda_pde = 0, mean +- std over three seeds. The FNO row carries its
+% rasterization floor from Table~\ref{tab:rasterfloor}.
+% TODO: per-material breakdown table.
+% TODO: figure, predicted vs. reference flux maps and pointwise error.
+
+\subsection{Physical consistency and the physics-informed objective}
+\label{sec:res-physics}
+% TODO (E2): PDE residual and boundary diagnostic vs. lambda_pde in
+% {0, 0.1, 1.0} for PI-GNO and MeshGraphNet, both benchmarks. This is where the
+% physics-informed claim of the title is earned or is not.
+
+\subsection{Discretization transfer}
+\label{sec:res-discretization}
+% TODO (E3): model columns for Table~\ref{tab:probefloor} -- invariance and
+% accuracy vs. the level-6 truth mesh, for all four models trained at level 2.
+% TODO (E3 aggregation): PI-GNO under A_sum, A_vol and A_raw of
+% Eq.~\eqref{eq:aggregation}, presented with A_sum as the GNN-side control, on
+% the uniform levels and on the mixed mesh.
+
+\subsection{Boundary-condition transfer}
+\label{sec:res-bc}
+
+The albedo family of Section~\ref{sec:datafamilies} was regenerated without the
+outer shield ring because the boundary condition is otherwise invisible. On the
+generated reflector-only database the albedo axis moves $\keff$ by
+approximately 1410~pcm end to end, against 0.5~pcm on the production layout, so
+the experiment measures a boundary condition that is actually present in the
+solution.
+
+One caveat belongs with the result rather than after it. Sweeping the albedo is
+a \emph{synthetic} axis: exactly one value of $\beta$ reproduces the solution
+of the full radial geometry, and the remainder are boundary conditions that no
+physical reactor presents. The experiment is a legitimate test of
+generalization across a family of boundary conditions, and it is not a physical
+parameter sweep.
+
+% TODO (E4): error vs. held-out beta for all four models; and (E4 with physics)
+% the same for the graph models at lambda_pde in {0, 0.1}, which asks whether
+% the operator residual --- known exactly at a new boundary condition, without
+% labels --- aids transfer.
+
+\subsection{Computational cost}
+\label{sec:res-cost}
+
+Table~\ref{tab:solvercost} gives the reference solver cost that any inference
+time must be compared against. Assembly of $A$ and $F$ accounts for 1.5--2\% of
+the total; the sparse LU factorization dominates. Wall-clock time scales as
+$N^{1.27}$ to $N^{1.31}$ across the family, consistent with nested-dissection
+sparse LU in two dimensions. All timings are single-threaded CPU.
+
+\begin{table}[htbp]
+\centering
+\caption{Reference solver cost per core, by database, on CPU. $N$ and the times
+are means over the timed samples of each split. Assembly is the construction of
+$A$ and $F$; the solve is the sparse LU factorization with power iteration to a
+relative residual below $10^{-8}$.}
+\label{tab:solvercost}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Database & $N$ & Assemble (s) & Solve (s) & Total (s) \\
+\midrule
+Fast reactor, main   & 4\,279   & 0.005 & 0.318  & 0.323  \\
+Pebble bed, main     & 7\,093   & 0.012 & 0.748  & 0.760  \\
+Mesh family, level 2 & 15\,562  & 0.019 & 1.699  & 1.718  \\
+Mesh family, level 3 & 31\,666  & 0.048 & 4.301  & 4.348  \\
+Mesh family, level 6 & 115\,114 & 0.138 & 22.142 & 22.280 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These numbers constrain what may honestly be claimed. A fast-reactor core
+solves in 0.32~s, so generating the entire 7000-sample database cost
+approximately 38 minutes of CPU time, and ``faster than the reference solver''
+is not by itself a compelling argument for a single core. The defensible
+arguments are the many-query setting --- design sweeps, uncertainty
+quantification and optimization, where $10^4$ to $10^6$ solves are required ---
+and the large-mesh setting, where the reference takes 22~s per core and scales
+superlinearly. A ratio between a CPU solver and a GPU model is also reported
+only with that label attached, since such a ratio measures hardware as much as
+method.
+
+% TODO (E5): inference time per core and parameter count per model, and the
+% accuracy-versus-inference-time Pareto front against the solver times above.
+
+\subsection{Generalisation beyond the training distribution}
+\label{sec:res-generalisation}
+% TODO: figure, error vs. insertion depth across the disjoint split ranges;
+% error vs. reflector-ring count and enrichment-boundary ring (fast reactor);
+% error vs. moderator pebble fraction (pebble bed).
+% OPTIONAL, cheap once E4 exists: test-time physics refinement. At an unseen
+% boundary condition A is known exactly and requires no labels, so PI-GNO can
+% take a few gradient steps on the PDE residual of the test sample itself. No
+% purely data-driven baseline has that channel available.
+
+%=========================================================================
+\section{Conclusions}
+\label{sec:conclusions}
+
+% TODO: write after results. Cover, and only if the data support it:
+%   - PI-GNO accuracy vs. the FEM reference in flux, k_eff and power (E1)
+%   - contribution of the PDE-constrained objective (E2, lambda_pde ablation)
+%   - discretization transfer, and whether the volume quadrature rather than
+%     the graph is what produced it (E3 + aggregation ablation)
+%   - boundary-condition transfer, with the synthetic-axis caveat (E4)
+%   - inference cost in the many-query setting, not as a per-core speedup (E5)
+%   - future work (3D cores, thermal-hydraulic feedback, transients)
+% Each claim must be stated against the floor it is measured over: the FNO
+% comparison against Table~\ref{tab:rasterfloor}, the transfer results against
+% Table~\ref{tab:probefloor}. Do not claim FNO cannot handle varying
+% resolution -- the claim is that it requires a uniform Cartesian grid.
+
+%=========================================================================
+\section*{CRediT authorship contribution statement}
+% TODO: agree the split with the co-author before submission. CRediT taxonomy:
+% Conceptualization, Methodology, Software, Validation, Formal analysis,
+% Investigation, Resources, Data curation, Writing -- original draft,
+% Writing -- review & editing, Visualization, Supervision, Project
+% administration, Funding acquisition.
+%
+% \textbf{Author Name:} TODO.
+
+\section*{Declaration of competing interest}
+The authors declare that they have no known competing financial interests or
+personal relationships that could have appeared to influence the work reported
+in this paper.
+
+\section*{Declaration of generative AI and AI-assisted technologies in the writing process}
+% Required by Elsevier when applicable; delete if not applicable.
+
+\section*{Data availability}
+% State one of: data will be made available on request; a repository link; or
+% that the code and generated database are openly available.
+
+\section*{Acknowledgments}
+% Funding sources and computing allocations.
+
+%=========================================================================
+\bibliographystyle{elsarticle-harv}   % author-year, as used by Ann. Nucl. Energy
+\bibliography{refs}
+
+\end{document}

@@ -1,0 +1,64 @@
+{
+  "configs": 30,
+  "meshes": [
+    "L0",
+    "L1",
+    "Lmixed3_1_3",
+    "L2",
+    "L3"
+  ],
+  "truth": "L6",
+  "reference_mesh": "L3",
+  "invariance_reference": {
+    "L0": {
+      "flux_rel_l2_g1": 0.09626441263959877,
+      "flux_rel_l2_g2": 0.058386610971608126,
+      "fallback_frac": 0.0802382619228985
+    },
+    "L1": {
+      "flux_rel_l2_g1": 0.06548729484610381,
+      "flux_rel_l2_g2": 0.06673741312706004,
+      "fallback_frac": 0.0009568130751464718
+    },
+    "Lmixed3_1_3": {
+      "flux_rel_l2_g1": 0.08634425666261342,
+      "flux_rel_l2_g2": 0.057024687597098764,
+      "fallback_frac": 0.003107141526236168
+    },
+    "L2": {
+      "flux_rel_l2_g1": 0.015775688533164044,
+      "flux_rel_l2_g2": 0.01722026331800699,
+      "fallback_frac": 0.0006763642043335946
+    }
+  },
+  "invariance_model": {},
+  "accuracy_reference_vs_truth": {
+    "L0": {
+      "flux_rel_l2_g1": 0.11310107036736491,
+      "flux_rel_l2_g2": 0.07423566677899823,
+      "fallback_frac": 0.04888407275033142
+    },
+    "L1": {
+      "flux_rel_l2_g1": 0.08149834414772585,
+      "flux_rel_l2_g2": 0.08270508942186804,
+      "fallback_frac": 0.0005915714626095578
+    },
+    "Lmixed3_1_3": {
+      "flux_rel_l2_g1": 0.0976862122144229,
+      "flux_rel_l2_g2": 0.0715501548049994,
+      "fallback_frac": 0.0025505888972182584
+    },
+    "L2": {
+      "flux_rel_l2_g1": 0.031525446197118646,
+      "flux_rel_l2_g2": 0.03417140869027849,
+      "fallback_frac": 0.00034864680477108943
+    },
+    "L3": {
+      "flux_rel_l2_g1": 0.015464454040980884,
+      "flux_rel_l2_g2": 0.01724178892265292,
+      "fallback_frac": 0.0005904787504570562
+    }
+  },
+  "accuracy_model_vs_truth": {},
+  "k_err_pcm_vs_truth": {}
+}

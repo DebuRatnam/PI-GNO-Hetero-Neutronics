@@ -84,14 +84,51 @@ Count-disjoint splits landed exactly as designed (train ctrl 0–5 / shut 0–1,
 val 6–7 / 2, test 8–10 / 3, near-uniform within each range). k tracks insertion
 count, so the k head EXTRAPOLATES on val/test — disclose in the paper, same as hex.
 
+### G=4 HEX STUDY — DONE (2026-08-07). Headline: the hex bias is DIFFUSION-limited,
+### not group-limited
+
+The planned "show the bias shrink with G" run happened, and the result is the
+opposite of the hoped narrative — and MORE useful. G=2 -> G=4 recovers only
+**~345 pcm of the ~6,943 pcm** hex bias:
+
+| metric | G=2 | G=4 |
+|---|---|---|
+| reactivity bias mean / max | +6,943 / +8,071 pcm | **+6,598 / +7,587 pcm** |
+| rod worth error | −8 to −9% | −7.3 to −8.4% |
+| power shape RMS (mean) | 6.5% | 6.4% |
+
+So the residual is the P1 diffusion approximation itself (flux anisotropy at black
+absorbers, long mean free paths), NOT the group collapse — the in-situ full-core
+weighting already made the G=2 constants spectrally faithful. Paper framing: the
+fhr/hex contrast (+380 vs +6,600 pcm) is a spectrum/transport statement; a reviewer
+saying "two groups is too coarse for a fast core" is answered with data. G=8 would
+be wasted compute. **Decision: train on the G=2 datasets; G=4 is the sensitivity
+study.** No G=4 dataset needed.
+
+What exists now:
+
+  - `xs_common.GROUP_BOUNDARIES_EV_G4["hex"]` = [9.1188 keV, 0.1 MeV, 1.353 MeV]
+    cuts, NESTED in the G=2 structure (0.1 MeV kept, so G=4 {1,2}/{3,4} sum to the
+    old g1/g2). Lethargy-grid points: g1 U-238 threshold fission, g2 SFR flux peak,
+    g3 unresolved-resonance capture, g4 resolved resonances (Na 2.85 keV).
+  - `materials.CHI_BY_G[4]` = (0.6043, 0.3835, 0.0118, 0.0004), same Watt params as
+    G=2; collapses to the documented 98.78% above 0.1 MeV. Tallied chi from the
+    table overrides it per state as usual.
+  - `xs_natrium_g4.json`: 12 branches, 24000p x 150b, **converged=True, max σ 4.02%**
+    (a first 12000p run had shield D g1 at 5.62% — the >1.35 MeV flux barely reaches
+    the B4C shield — and was rerun; do not cite the 12000p numbers).
+  - `validation_hex_g4.csv` + `validate_openmc.py --groups G --xs-table T --resume`:
+    the diffusion side re-solves on the G=4 table, the CE side REUSES the 6 hex
+    statepoints in `openmc_run/validate_hex_*` (CE is group-independent), so the
+    whole validation cost zero new transport. materials.py is patched via
+    N_GROUPS/BRANCH_TABLE_PATH before first XS access (the handoff-blessed lazy-load
+    mechanism); require_branch_table still rejects mismatched tables.
+
 ### TO RUN NEXT
 
-1. **G=4 or G=8 branch grid for HEX** (transport, hours; item 3 below — hex, not
-   fhr: hex's +6,943 pcm is the G=2 cost worth showing shrink; fhr's +380 pcm shows
-   G=2 suffices there). Needs physics-chosen 4-group cuts + re-derived CHI first
-   (`xs_common.group_boundaries_ev` falls back to generic log-spacing for G!=2).
-2. **Training + paper** (item 3 below). Note `main.tex` exists in ~/Downloads —
-   user has started the manuscript.
+1. **Training + the paper** (item 2 below). Note `main.tex` exists in ~/Downloads —
+   user has started the manuscript. Both datasets (hex01, fhr01) and all three
+   validation tables (hex G=2, hex G=4, fhr) are done.
 
 Pipeline design doc (kept current through 2026-07-31, includes both validation
 tables): https://claude.ai/code/artifact/e7cb323e-bfe3-402b-81b6-4eb0e2cd3cac

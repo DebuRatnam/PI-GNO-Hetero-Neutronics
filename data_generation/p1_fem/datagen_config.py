@@ -51,6 +51,26 @@ VACUUM_EXTRAP_FACTOR = 0.7104
 # (src lambda_bc = 0). Stored in metadata.
 VACUUM_ROBIN_ALPHA = 0.5
 
+
+def robin_alpha_from_albedo(beta):
+    """Marshak Robin coefficient for an albedo boundary.
+
+        J- = beta J+   ->   alpha = (1 - beta) / (2 (1 + beta))
+
+    beta = 0 returns exactly VACUUM_ROBIN_ALPHA (0.5), so vacuum is the beta = 0
+    member of this family rather than a separate code path -- which is what lets
+    every previously generated sample regenerate bit-for-bit. beta -> 1 returns
+    alpha -> 0, a reflective boundary with no leakage.
+
+    This is the axis of the boundary-condition transfer study: a model trained on
+    one range of beta is asked to predict on a disjoint range.
+    """
+    import numpy as _np
+    b = _np.asarray(beta, dtype=float)
+    if _np.any(b < 0.0) or _np.any(b >= 1.0):
+        raise ValueError(f"albedo beta must lie in [0, 1), got {beta}")
+    return (1.0 - b) / (2.0 * (1.0 + b))
+
 # Power normalization: power_density = kappa * (kappa_f1*Sigma_f1*phi1 + kappa_f2*Sigma_f2*phi2)
 # We fold kappa (energy/fission) and use nuSigma_f as a proxy when Sigma_f is not
 # tracked separately; documented in power.py. Stored in metadata.
@@ -154,7 +174,17 @@ class HexCoreConfig:
     pitch_cm: float = 18.7            # assembly center-to-center (representative)
     duct_wall_cm: float = 0.37        # HT9 wall thickness (provenance/homogenization)
     gap_cm: float = 0.40              # inter-assembly sodium gap
-    hex_subdiv: int = 2               # triangulation refinement per hex (1->6, 2->24 tris)
+    # Mesh refinement level per hexagon (geometry._hex_submesh). This is the ONLY
+    # knob that changes discretization without changing physics, and it is the
+    # axis of the resolution-transfer study.
+    #   0 -> the original 13-node / 18-triangle submesh (DEFAULT: every existing
+    #        dataset was generated at this level and must keep regenerating
+    #        bit-for-bit, so do not change this default)
+    #   s -> R = 2s concentric rings, 1 + 3R(R+1) nodes and 6R^2 triangles per
+    #        assembly: s = 1, 2, 3 gives 19 / 61 / 127 nodes.
+    # The field was previously declared as 2 but never read anywhere; reading it
+    # at the old default would have silently re-meshed the existing datasets.
+    hex_subdiv: int = 0
 
     # Radial ring layout (from the center outward): fuel_rings occupies rings
     # 0..fuel_rings-1, then reflector_rings, then shield_rings, then vacuum. Total

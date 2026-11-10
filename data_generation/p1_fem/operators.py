@@ -76,13 +76,36 @@ def assemble_AF(geom: CoreGeometry, physics: PhysicsConfig
         Ke = (De / (4.0 * area))[:, None, None] * grad
         return sp.coo_matrix((Ke.ravel(), (I, J)), shape=(N, N)).tocsr()
 
-    # Marshak vacuum Robin term on boundary edges (same for every group diagonal)
+    # Marshak partial-current Robin term on boundary edges (same for every group
+    # diagonal).
+    #
+    # The coefficient is PER EDGE, so a boundary condition other than pure vacuum
+    # can be expressed. For an albedo beta (the fraction of the outgoing partial
+    # current returned to the core, J- = beta J+):
+    #
+    #     alpha = (1 - beta) / (2 (1 + beta))
+    #
+    # beta = 0 gives alpha = 0.5, exactly the vacuum value
+    # (VACUUM_ROBIN_ALPHA), so every previously generated sample is reproduced
+    # bit-for-bit. beta -> 1 gives alpha -> 0, a reflective boundary.
+    #
+    # geom.boundary_albedo, when present, is a per-edge alpha array [B]; absent,
+    # the scalar physics.vacuum_robin_alpha applies to every edge as before.
     Rd = sp.csr_matrix((N, N))
     be = geom.boundary_edges
     if be.size:
         L = np.hypot(coords[be[:, 0], 0] - coords[be[:, 1], 0],
                      coords[be[:, 0], 1] - coords[be[:, 1], 1])
-        contrib = physics.vacuum_robin_alpha * L / 2.0
+        alpha = getattr(geom, "boundary_alpha", None)
+        if alpha is None:
+            alpha = physics.vacuum_robin_alpha
+        else:
+            alpha = np.asarray(alpha, dtype=float)
+            if alpha.shape != (be.shape[0],):
+                raise ValueError(
+                    f"boundary_alpha has shape {alpha.shape}, expected one value "
+                    f"per boundary edge ({be.shape[0]},)")
+        contrib = alpha * L / 2.0
         robin = np.zeros(N)
         np.add.at(robin, be[:, 0], contrib)
         np.add.at(robin, be[:, 1], contrib)

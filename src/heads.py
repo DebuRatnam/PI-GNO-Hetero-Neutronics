@@ -25,6 +25,17 @@ class FluxHead(nn.Module):
 
 
 class KHead(nn.Module):
+    """Pool node latents to one graph vector, then MLP -> normalized k_eff.
+
+    k_eff is a GRAPH-wise quantity, so pooling must respect graph boundaries. With
+    `batch=None` this pools over every row and returns a 0-d scalar (the original
+    single-graph behaviour, kept bit-for-bit). With `batch` given -- a [N] long
+    tensor of sample ids, as produced by benchmarks.batching.collate_graphs -- it
+    pools per graph and returns [n_graphs]. Pooling over a whole batch as if it
+    were one core would blend cores with different rod insertions into a single
+    k, which is silently wrong rather than merely inaccurate.
+    """
+
     def __init__(self, latent_dim: int, hidden: int, pool: str = "mean"):
         super().__init__()
         self.pool = pool
@@ -32,17 +43,44 @@ class KHead(nn.Module):
             self.attn = nn.Linear(latent_dim, 1)
         self.net = mlp(latent_dim, hidden, 1)
 
-    def forward(self, h: torch.Tensor) -> torch.Tensor:  # -> scalar (normalized k)
+    def _pool_single(self, h: torch.Tensor) -> torch.Tensor:
         if self.pool == "mean":
-            g = h.mean(0, keepdim=True)
-        elif self.pool == "sum":
-            g = h.sum(0, keepdim=True)
-        elif self.pool == "attention":
-            w = torch.softmax(self.attn(h), dim=0)        # [N,1]
-            g = (w * h).sum(0, keepdim=True)
-        else:
-            raise ValueError(self.pool)
-        return self.net(g).squeeze()                       # scalar
+            return h.mean(0, keepdim=True)
+        if self.pool == "sum":
+            return h.sum(0, keepdim=True)
+        if self.pool == "attention":
+            w = torch.softmax(self.attn(h), dim=0)         # [N,1]
+            return (w * h).sum(0, keepdim=True)
+        raise ValueError(self.pool)
+
+    def _pool_batched(self, h: torch.Tensor, batch: torch.Tensor,
+                      n_graphs: int) -> torch.Tensor:
+        g = h.new_zeros((n_graphs, h.shape[1]))
+        if self.pool == "attention":
+            s = self.attn(h)                                # [N,1]
+            # segment softmax: subtract the per-graph max before exp for stability
+            mx = h.new_full((n_graphs, 1), float("-inf"))
+            mx = mx.scatter_reduce(0, batch.unsqueeze(1), s, reduce="amax",
+                                   include_self=True)
+            e = torch.exp(s - mx[batch])                    # [N,1]
+            den = h.new_zeros((n_graphs, 1)).index_add_(0, batch, e)
+            w = e / den[batch].clamp_min(1e-12)
+            return g.index_add_(0, batch, w * h)
+        g = g.index_add_(0, batch, h)
+        if self.pool == "sum":
+            return g
+        if self.pool == "mean":
+            cnt = h.new_zeros((n_graphs, 1)).index_add_(
+                0, batch, h.new_ones((h.shape[0], 1)))
+            return g / cnt.clamp_min(1.0)
+        raise ValueError(self.pool)
+
+    def forward(self, h: torch.Tensor, batch: torch.Tensor = None,
+                n_graphs: int = None) -> torch.Tensor:
+        if batch is None:
+            return self.net(self._pool_single(h)).squeeze()          # scalar
+        n_graphs = int(batch.max()) + 1 if n_graphs is None else n_graphs
+        return self.net(self._pool_batched(h, batch, n_graphs)).squeeze(-1)  # [B]
 
 
 class PowerHead(nn.Module):
