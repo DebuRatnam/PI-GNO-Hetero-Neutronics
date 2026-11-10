@@ -34,11 +34,33 @@ the problem. This is a deliberate departure from the production layout and is
 recorded in every sample's metadata, so a reader can see that E4 runs on a
 reflector-only core rather than the shielded production one.
 
-The same measurement on fhr gives 1.4 pcm / 0.049% at the full published vessel
-(bed -> 60 cm graphite reflector -> barrel -> downcomer -> vessel). fhr has no
-equivalent knob for thinning that stack, and inventing one would depart from the
-gFHR dimensional spec the project pins, so BC transfer is a HEX-ONLY claim
-unless that trade is explicitly accepted.
+The same measurement on fhr gives 1.1-1.2 pcm / 0.042% at the full published
+vessel (bed -> 60 cm graphite reflector -> barrel -> downcomer -> vessel): the
+boundary is invisible there too, and fhr has no shield ring to drop. The fix that
+does work is TRUNCATING the meshed domain (geometry_pebble's `domain_outer_r`) and
+letting the albedo boundary stand in for the reflector that is no longer meshed --
+the textbook use of an albedo BC. Measured with probe_bc_sensitivity.py, 3 core
+seeds each:
+
+    fhr domain           dk(beta: 0 -> 0.8)     normalized flux change
+      R = 191 (full)          1.1 pcm                 0.042%
+      R = 140              2027-2174 pcm             11.6-12.5%
+      R = 135              2170-2498 pcm             12.1-14.0%
+      R = 133              2306-2640 pcm             12.5-14.3%
+
+Any of the three clears the hex reference (1445 pcm / 11.1%). The floor is 132.1 cm
+= geometry_pebble.structure_outer_radius: the control elements sit at 127.9 with
+radius 2.6 and a 1.6 cm graphite channel lining, so cutting inside that deletes the
+rod-insertion variability -- make_pebble_core refuses rather than allowing it.
+
+Truncation is a departure to state plainly if an fhr BC dataset is built on it: at
+R=140 the swept beta range [0, 0.8] is UNDER-reflected relative to the published
+core (measured on one seed: k = 1.0489 at the full vessel with vacuum, reproduced
+at R=140 near beta ~ 0.92, i.e. above the swept range). Group constants are also
+still the full-core tallies, so the truncated reflector carries the spectrum it had
+when 60 cm thick. Neither matters for a BC-transfer experiment -- beta is a
+parametric knob, not a claim about a real vessel -- but both are reasons the
+resulting cores are not gFHR cores and must not be reported as such.
 """
 
 from __future__ import annotations

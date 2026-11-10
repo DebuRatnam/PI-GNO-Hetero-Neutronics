@@ -111,7 +111,11 @@ def make_sample(cfg: DataGenConfig = DEFAULT, *,
             insert_control=knobs.get("insert_control", 1.0),
             insert_shutdown=knobs.get("insert_shutdown", 0.0),
             graphite_pebble_frac=knobs.get("graphite_pebble_frac"),
-            boundary_albedo=knobs.get("boundary_albedo"), rng=rng)
+            boundary_albedo=knobs.get("boundary_albedo"),
+            # None -> the full published vessel (unchanged). A radius truncates
+            # the meshed domain there so the albedo boundary is a live part of
+            # the problem; see geometry_pebble.make_pebble_core.
+            domain_outer_r=knobs.get("domain_outer_r"), rng=rng)
     else:
         geom = make_core(
             cfg.hexcore, layout_name=layout_name,

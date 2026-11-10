@@ -82,7 +82,40 @@ Design points, all deliberate:
 
 ## 4. Remaining CPU work, in priority order
 
-### 4a. fhr BC sensitivity sweep — **blocks a scoping decision** (~1 h)
+### 4a. fhr BC sensitivity sweep — **DONE, Option A passes**
+
+Measured with `probe_bc_sensitivity.py` (3 core seeds per case, everything but β
+held fixed):
+
+| fhr domain | Δk(β: 0→0.8) | normalized flux change |
+|---|---|---|
+| R = 191 (full published vessel) | 1.1 pcm | 0.042% |
+| R = 140 | 2027–2174 pcm | 11.6–12.5% |
+| R = 135 | 2170–2498 pcm | 12.1–14.0% |
+| R = 133 | 2306–2640 pcm | 12.5–14.3% |
+
+All three clear the hex reference (1445 pcm / 11.1%), so **take the largest,
+R = 140** — it keeps 20 cm of graphite outside the control channels and still
+over-delivers. The floor is **132.1 cm**, not the 131 assumed below: the rods are
+at 127.9 with r=2.6 **plus a 1.6 cm graphite channel lining**, and
+`make_pebble_core` now refuses anything smaller instead of silently clipping the
+lining.
+
+Implemented: `domain_outer_r` on `geometry_pebble.make_pebble_core`, threaded
+through `dataset.make_sample`. Default `None` → full published build;
+`fhr01` verified to still regenerate bit-for-bit.
+
+Two things to disclose if an fhr E4 dataset is built on this: β ∈ [0, 0.8] at
+R=140 is **under-reflected** relative to the published core (full-vessel k is
+reproduced near β ≈ 0.92, above the swept range), and the group constants are
+still the full-core tallies, so the truncated reflector carries the spectrum it
+had at 60 cm thickness. Neither breaks a BC-transfer experiment; both mean these
+are not gFHR cores.
+
+Remaining (~4 h): give `generate_bc.py` an fhr path (reactor dispatch + the fhr
+binary rod draw + `domain_outer_r=140`), then generate.
+
+<details><summary>original scoping note</summary>
 
 E4 (boundary-condition transfer) is currently **hex-only**. Reason: at fhr's
 published vessel (bed R=120 → 60 cm graphite reflector → barrel → downcomer →
@@ -108,6 +141,8 @@ dataset depends on. R=131 is the floor.
 and normalized flux change at each. Target ~1000+ pcm (hex gets 1445). If all
 three come back near 1.4 pcm, Option A is dead → E4 stays hex-only (Option B, zero
 work). ~1 h to know; ~4 h more if it passes.
+
+</details>
 
 ### 4b. Generate `hex_bc` (~1.5 h serial, ~3 min as a 40-task array)
 

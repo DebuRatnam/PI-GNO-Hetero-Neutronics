@@ -224,11 +224,20 @@ def _free_boundary_edges(elements: np.ndarray) -> np.ndarray:
     return uniq[counts == 1]
 
 
+def structure_outer_radius(cfg: PebbleCoreConfig) -> float:
+    """Outermost radius reached by any RIGID structure node (control element + its
+    graphite channel lining). A truncated domain may not cut inside this: doing so
+    deletes control elements (or leaves them lining-less on the boundary) and with
+    them the rod-insertion variability the dataset is built on."""
+    return cfg.R_bed + cfg.control_offset + cfg.r_ctrl + cfg.channel_wall
+
+
 def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
                      insert_control: float = 1.0, insert_shutdown: float = 0.0,
                      graphite_pebble_frac: Optional[float] = None,
                      burnup_field: Optional[np.ndarray] = None,
                      boundary_albedo: Optional[float] = None,
+                     domain_outer_r: Optional[float] = None,
                      rng: Optional[np.random.Generator] = None) -> CoreGeometry:
     """Build one frozen KP-FHR pebble-bed sample -> CoreGeometry.
 
@@ -236,8 +245,30 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
     control / shutdown bank: 0 = withdrawn (FLiBe follower), 1 = full B4C absorber,
     between = partially inserted (axially-averaged gray absorber, materials_fhr.xs_for).
     graphite_pebble_frac overrides the config default (per-sample reactivity lever).
+
+    domain_outer_r TRUNCATES the meshed domain at that radius: the graphite reflector
+    fill is clamped to it and the barrel/downcomer/vessel stack is dropped when it lies
+    outside. This is the textbook use of an albedo boundary -- the reflector you do not
+    mesh is represented by the return current at the boundary -- and it exists because
+    at the full published vessel (R=191) the outer boundary is optically invisible:
+    sweeping beta 0 -> 0.8 there moves k_eff by ~1 pcm, so a boundary-condition
+    experiment on the untruncated core measures nothing. None (default) keeps the full
+    published build, so every existing fhr sample regenerates bit-for-bit.
     """
     rng = rng or np.random.default_rng()
+    r_struct = structure_outer_radius(cfg)
+    if domain_outer_r is not None:
+        domain_outer_r = float(domain_outer_r)
+        if domain_outer_r < r_struct:
+            raise ValueError(
+                f"domain_outer_r={domain_outer_r} cuts inside the control elements "
+                f"and their graphite channel lining (outer edge {r_struct:g} cm = "
+                f"R_bed {cfg.R_bed:g} + control_offset {cfg.control_offset:g} + "
+                f"r_ctrl {cfg.r_ctrl:g} + channel_wall {cfg.channel_wall:g}). "
+                f"Truncating there deletes the rod-insertion variability.")
+        if domain_outer_r > cfg.R_vessel:
+            raise ValueError(f"domain_outer_r={domain_outer_r} exceeds the vessel "
+                             f"outer radius {cfg.R_vessel:g}")
     if graphite_pebble_frac is not None:
         from dataclasses import replace
         cfg = replace(cfg, graphite_pebble_frac=float(graphite_pebble_frac))
@@ -303,12 +334,17 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
                     continue                    # control elements own their channels
                 coords.append(p); mats.append(mat_id)
 
+    # domain truncation: everything outside domain_outer_r is not meshed and is
+    # represented by the albedo boundary instead. None -> the full published build.
+    r_dom = float(domain_outer_r) if domain_outer_r is not None else float(cfg.R_vessel)
+    r_refl_eff = min(cfg.R_refl, r_dom)
     # central graphite column, when one is configured (gFHR/KP-FHR: none)
     _fill(0.0, cfg.R_center_refl, fine_step, refl_id)
     # outer graphite reflector (holds the control channels)
-    _fill(cfg.R_bed, cfg.R_refl, refl_step, refl_id, avoid_control=True)
-    # barrel + downcomer + vessel, homogenized into one `vessel` ring
-    _fill(cfg.R_refl, cfg.R_vessel, fine_step, vess_id)
+    _fill(cfg.R_bed, r_refl_eff, refl_step, refl_id, avoid_control=True)
+    # barrel + downcomer + vessel, homogenized into one `vessel` ring (dropped
+    # entirely when the domain is truncated at or inside the reflector)
+    _fill(r_refl_eff, r_dom, fine_step, vess_id)
 
     # --- interstitial FLiBe: place coolant nodes to hit the real pebble:FLiBe VOLUME
     # ratio (~60:40). coolant_per_pebble=1.0 is calibrated to ~60% pebble volume
@@ -431,6 +467,11 @@ def make_pebble_core(cfg: PebbleCoreConfig, *, layout_name: str = "kpfhr",
         "R_fuel_out": cfg.R_fuel_out, "R_bed": cfg.R_bed,
         "R_refl": cfg.R_refl, "R_barrel": cfg.R_barrel,
         "R_downcomer": cfg.R_downcomer, "R_vessel": cfg.R_vessel,
+        # meshed extent. Equal to R_vessel for the full published build; smaller
+        # when the domain is truncated and the omitted stack is carried by the
+        # albedo boundary instead (see make_pebble_core's domain_outer_r).
+        "domain_outer_r": float(r_dom),
+        "domain_truncated": bool(domain_outer_r is not None),
         "core_shape": ("cylindrical bed (no central reflector column)"
                        if cfg.R_center_refl <= 0.0 else "annular bed"),
         "upscatter_included": True,
